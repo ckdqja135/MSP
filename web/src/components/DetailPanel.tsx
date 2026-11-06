@@ -82,6 +82,18 @@ function EventDetail({ event, events }: { event: EventRow; events: EventRow[] })
   )
 }
 
+const COLLECTOR_LABEL: Record<string, string> = {
+  cpu: 'CPU',
+  memory: '메모리',
+  disk: '디스크 용량',
+  disk_io: '디스크 I/O',
+  network: '네트워크',
+  temperature: '온도',
+  docker: 'Docker',
+  container_stats: '컨테이너 자원',
+  boot: '가동 시간',
+}
+
 function collectorText(state: string): string {
   if (state === 'ok') return '정상'
   if (state === 'unsupported') return '미지원'
@@ -128,7 +140,7 @@ function HostDetail({ server, now }: { server: Server; now: number }) {
         {server.collectors.length === 0 && <p className="muted">수집기 상태를 받지 못했습니다.</p>}
         {server.collectors.map((collector) => (
           <div key={collector.name}>
-            <Row label={collector.name}>
+            <Row label={COLLECTOR_LABEL[collector.name] ?? collector.name}>
               {collector.state === 'unsupported' && <UnsupportedIcon />} {collectorText(collector.state)}
             </Row>
             {collector.error && <p className="muted small">{collector.error}</p>}

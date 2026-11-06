@@ -90,11 +90,14 @@ func serve(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	app := central.NewServer(store, central.NewHub(), central.Config{
-		Listen: *listen, WebDir: *webDir, DashboardPassword: password,
-	})
+	config := central.Config{Listen: *listen, WebDir: *webDir, DashboardPassword: password}
+	var scenario *demo.Scenario
 	if *demoMode {
-		if err := startDemo(ctx, store, app); err != nil {
+		scenario = demo.New(time.Now().UTC())
+	}
+	app := central.NewServer(store, central.NewHub(), config)
+	if *demoMode {
+		if err := startDemo(ctx, store, app, scenario); err != nil {
 			return err
 		}
 	}
@@ -115,13 +118,11 @@ func serve(args []string) error {
 	return nil
 }
 
-func startDemo(ctx context.Context, store *central.Store, app *central.Server) error {
+func startDemo(ctx context.Context, store *central.Store, app *central.Server, scenario *demo.Scenario) error {
 	if err := store.ResetDemo(ctx); err != nil {
 		return err
 	}
-	now := time.Now().UTC()
-	scenario := demo.New(now)
-	cursor, err := scenario.Seed(ctx, now, func(ctx context.Context, batch protocol.Batch, receivedAt time.Time) error {
+	cursor, err := scenario.Seed(ctx, time.Now().UTC(), func(ctx context.Context, batch protocol.Batch, receivedAt time.Time) error {
 		_, err := store.Ingest(ctx, batch, receivedAt)
 		return err
 	})

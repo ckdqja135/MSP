@@ -1,0 +1,12 @@
+{
+  "central_url": "https://central.example.test",
+  "server_id": "home-1",
+  "token_file": "/etc/msp-agent/token",
+  "docker_socket": "/var/run/docker.sock",
+  "spool_dir": "/var/lib/msp-agent/spool",
+  "spool_max_mb": 200,
+  "disk_path": "/",
+  "probes": [
+    { "service": "blog/api", "port": 8080, "path": "/health", "timeout_ms": 5000 }
+  ]
+}

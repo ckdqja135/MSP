@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const testID = "aaaaaaaaaaaa1111111111112222222222223333333333334444444444445555"
@@ -215,5 +216,60 @@ func TestContainerRemovedDuringListingIsSkipped(t *testing.T) {
 	}
 	if len(topology.Containers) != 0 {
 		t.Errorf("containers = %+v", topology.Containers)
+	}
+}
+
+func TestStatsOnlyAsksForOneSnapshot(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/"+testID+"/stats", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("stream") != "false" || r.URL.Query().Get("one-shot") != "true" {
+			t.Errorf("query = %s", r.URL.RawQuery)
+		}
+		w.Write([]byte(`{"cpu_stats":{"cpu_usage":{"total_usage":10},"system_cpu_usage":100,"online_cpus":2},
+			"memory_stats":{"usage":500,"limit":1000,"stats":{"inactive_file":100}},
+			"networks":{"eth0":{"rx_bytes":1,"tx_bytes":2},"eth1":{"rx_bytes":3,"tx_bytes":4}}}`))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	stats, err := newClient(srv.URL, http.DefaultTransport).Stats(context.Background(), testID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.CPUTotal != 10 || stats.OnlineCPUs != 2 || stats.MemInactive != 100 || stats.NetRx != 4 || stats.NetTx != 6 {
+		t.Errorf("stats = %+v", stats)
+	}
+}
+
+func TestEventsKeepOnlyAllowedAttributes(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /events", func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Query().Get("filters"), "container") {
+			t.Errorf("filters = %s", r.URL.RawQuery)
+		}
+		w.Write([]byte(`{"Type":"container","Action":"die","Actor":{"ID":"` + testID + `","Attributes":{"name":"blog-api-1","exitCode":"137","image":"x","com.docker.compose.project":"blog","com.docker.compose.service":"api","com.docker.compose.container-number":"2","secret.label":"LABEL-SECRET"}},"timeNano":1762398000000000000}` + "\n"))
+		w.Write([]byte(`{"Type":"network","Action":"connect","Actor":{"ID":"net1","Attributes":{"name":"proxy","container":"` + testID + `"}},"timeNano":1762398001000000000}` + "\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var events []Event
+	err := newClient(srv.URL, http.DefaultTransport).Events(context.Background(), time.Now(), func(e Event) { events = append(events, e) })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %+v", events)
+	}
+	die := events[0]
+	if die.ExitCode != "137" || die.Project != "blog" || die.Service != "api" || die.Replica != 2 || die.At.IsZero() {
+		t.Errorf("die = %+v", die)
+	}
+	if events[1].Name != "proxy" || events[1].ContainerID != testID {
+		t.Errorf("connect = %+v", events[1])
+	}
+	body, _ := json.Marshal(events)
+	if strings.Contains(string(body), "LABEL-SECRET") {
+		t.Errorf("허용하지 않은 속성이 전달됐다: %s", body)
 	}
 }

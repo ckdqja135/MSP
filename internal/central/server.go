@@ -149,15 +149,24 @@ func isLoopbackHost(hostport string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
+// authenticateAgent는 에이전트 요청을 인증하고 서버 ID를 돌려준다.
+func (s *Server) authenticateAgent(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if s.store.Mode() == protocol.ModeDemo {
 		http.Error(w, "데모 모드는 실제 에이전트 데이터를 받지 않습니다", http.StatusForbidden)
-		return
+		return "", false
 	}
 	serverID := r.Header.Get("X-MSP-Server")
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	if serverID == "" || !s.store.Authenticate(r.Context(), serverID, token) {
 		http.Error(w, "인증 실패", http.StatusUnauthorized)
+		return "", false
+	}
+	return serverID, true
+}
+
+func (s *Server) handleBatch(w http.ResponseWriter, r *http.Request) {
+	serverID, ok := s.authenticateAgent(w, r)
+	if !ok {
 		return
 	}
 

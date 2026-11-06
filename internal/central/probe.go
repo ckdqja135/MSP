@@ -102,6 +102,8 @@ func failureText(failure string) string {
 		return "연결 거부"
 	case "status":
 		return "비정상 상태 코드"
+	case "no_container":
+		return "실행 중인 컨테이너 없음"
 	case "":
 		return "원인 미상"
 	}

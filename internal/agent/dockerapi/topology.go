@@ -2,6 +2,8 @@ package dockerapi
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"net/url"
 	"sort"
 	"strconv"
@@ -191,5 +193,6 @@ func (c *Client) Topology(ctx context.Context) (*protocol.Topology, error) {
 }
 
 func isNotFound(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "status 404")
+	var status *StatusError
+	return errors.As(err, &status) && status.Code == http.StatusNotFound
 }

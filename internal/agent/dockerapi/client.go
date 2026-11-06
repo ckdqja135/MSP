@@ -41,6 +41,16 @@ func allowed(r *http.Request) bool {
 	return false
 }
 
+// StatusError는 Docker API가 200이 아닌 응답을 준 경우다.
+type StatusError struct {
+	Path string
+	Code int
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("dockerapi: GET %s: status %d", e.Path, e.Code)
+}
+
 type readOnlyTransport struct {
 	next http.RoundTripper
 }
@@ -93,7 +103,7 @@ func (c *Client) open(ctx context.Context, path string, query url.Values) (*http
 	}
 	if resp.StatusCode != http.StatusOK {
 		defer resp.Body.Close()
-		return nil, fmt.Errorf("dockerapi: GET %s: status %d", path, resp.StatusCode)
+		return nil, &StatusError{Path: path, Code: resp.StatusCode}
 	}
 	return resp, nil
 }
