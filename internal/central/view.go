@@ -283,7 +283,14 @@ func buildTopologyView(t *protocol.Topology, probes map[string][]ProbeView, late
 		}
 		view.Projects = append(view.Projects, project)
 	}
-	sort.Slice(view.Projects, func(i, j int) bool { return view.Projects[i].Key < view.Projects[j].Key })
+	sort.Slice(view.Projects, func(i, j int) bool {
+		a, b := view.Projects[i].Key, view.Projects[j].Key
+		// Compose 라벨이 없는 컨테이너 묶음은 목록 맨 뒤에 둔다.
+		if (a == protocol.StandaloneProject) != (b == protocol.StandaloneProject) {
+			return b == protocol.StandaloneProject
+		}
+		return a < b
+	})
 
 	view.Relations = buildRelations(t)
 	view.Networks = buildNetworks(t)

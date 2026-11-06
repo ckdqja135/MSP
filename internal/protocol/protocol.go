@@ -192,12 +192,13 @@ type Probe struct {
 
 const HostScope = "host"
 
-const standaloneProject = "_standalone"
+// StandaloneProject는 Compose 라벨이 없는 컨테이너를 묶는 이름이다.
+const StandaloneProject = "_standalone"
 
 // ServiceKey는 컨테이너가 재생성되어도 유지되는 서비스 식별자를 만든다.
 func ServiceKey(project, service string) string {
 	if project == "" {
-		project = standaloneProject
+		project = StandaloneProject
 	}
 	return project + "/" + service
 }
