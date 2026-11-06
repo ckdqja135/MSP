@@ -70,6 +70,28 @@ type Topology struct {
 	ObservedAt time.Time   `json:"observed_at"`
 	Containers []Container `json:"containers"`
 	Networks   []Network   `json:"networks"`
+	// HostServices는 Docker 밖에서 포트를 연 호스트 프로세스다.
+	HostServices []HostService `json:"host_services,omitempty"`
+}
+
+// HostService의 근거다. 소켓 주인을 읽지 못하면 이름은 추정이거나 비어 있다.
+const (
+	HostEvidenceOwner   = "socket-owner"
+	HostEvidenceConfig  = "config"
+	HostEvidenceName    = "name-match"
+	HostEvidenceUnknown = "unknown"
+)
+
+type HostPort struct {
+	IP   string `json:"ip"`
+	Port int    `json:"port"`
+}
+
+type HostService struct {
+	Name      string     `json:"name"`
+	Ports     []HostPort `json:"ports"`
+	Evidence  string     `json:"evidence"`
+	Listening bool       `json:"listening"`
 }
 
 // Container에는 환경 변수와 실행 명령 필드를 두지 않는다. 비밀값이 섞일 수 있기 때문이다.
@@ -232,6 +254,9 @@ type Probe struct {
 
 const HostScope = "host"
 
+// HostProject는 Docker 밖의 호스트 서비스를 묶는 이름이다.
+const HostProject = "_host"
+
 // StandaloneProject는 Compose 라벨이 없는 컨테이너를 묶는 이름이다.
 const StandaloneProject = "_standalone"
 
@@ -256,10 +281,12 @@ func ContainerScope(serviceKey string, replica int) string {
 func (t *Topology) Normalize() {
 	sort.Slice(t.Containers, func(i, j int) bool { return t.Containers[i].ID < t.Containers[j].ID })
 	sort.Slice(t.Networks, func(i, j int) bool { return t.Networks[i].ID < t.Networks[j].ID })
+	sort.Slice(t.HostServices, func(i, j int) bool { return t.HostServices[i].Name < t.HostServices[j].Name })
 	body, _ := json.Marshal(struct {
-		Containers []Container
-		Networks   []Network
-	}{t.Containers, t.Networks})
+		Containers   []Container
+		Networks     []Network
+		HostServices []HostService
+	}{t.Containers, t.Networks, t.HostServices})
 	sum := sha256.Sum256(body)
 	t.Hash = hex.EncodeToString(sum[:])
 }

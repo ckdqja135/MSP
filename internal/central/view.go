@@ -100,6 +100,8 @@ type TopologyView struct {
 	Projects   []ProjectView `json:"projects"`
 	Networks   []NetworkView `json:"networks"`
 	Relations  []Relation    `json:"relations"`
+	// HostServices는 Docker 밖의 서비스다. 근거에 따라 이름이 확인, 설정, 추정, 미확인으로 나뉜다.
+	HostServices []protocol.HostService `json:"host_services"`
 }
 
 // Reachability는 서버 도달 상태다. 응답 중단만으로 정전이나 OS 장애를 단정하지 않는다.
@@ -321,6 +323,10 @@ func buildTopologyView(t *protocol.Topology, probes map[string][]ProbeView, late
 
 	view.Relations = buildRelations(t)
 	view.Networks = buildNetworks(t)
+	view.HostServices = t.HostServices
+	if view.HostServices == nil {
+		view.HostServices = []protocol.HostService{}
+	}
 	return view
 }
 

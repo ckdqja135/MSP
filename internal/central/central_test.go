@@ -160,6 +160,44 @@ func TestSameNetworkDoesNotCreateServiceRelation(t *testing.T) {
 	}
 }
 
+func TestHostServicesReachTheViewAndAreVersioned(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	first := topologyWith(baseTime)
+	first.HostServices = []protocol.HostService{{Name: "nginx", Evidence: protocol.HostEvidenceName, Listening: true, Ports: []protocol.HostPort{{IP: "0.0.0.0", Port: 80}}}}
+	first.Normalize()
+	batch := liveBatch(1, baseTime)
+	batch.Topology = first
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	later := baseTime.Add(time.Minute)
+	second := topologyWith(later)
+	second.Normalize()
+	batch = liveBatch(2, later)
+	batch.Topology = second
+	if _, err := store.Ingest(ctx, batch, later); err != nil {
+		t.Fatal(err)
+	}
+
+	now := baseTime.Add(2 * time.Minute)
+	current, err := store.Topology(ctx, "home-1", nil, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.HostServices) != 0 {
+		t.Errorf("current = %+v", current.HostServices)
+	}
+	past := baseTime.Add(30 * time.Second)
+	historical, err := store.Topology(ctx, "home-1", &past, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(historical.HostServices) != 1 || historical.HostServices[0].Name != "nginx" {
+		t.Errorf("과거 호스트 서비스 = %+v", historical.HostServices)
+	}
+}
+
 func TestDeclaredAndPublishedRelationsCarryEvidence(t *testing.T) {
 	c := protocol.Container{ID: "a", Project: "blog", Service: "api", DeclaredDependsOn: []string{"db"},
 		Ports: []protocol.PortBinding{

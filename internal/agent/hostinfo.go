@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/shirou/gopsutil/v4/cpu"
 	"github.com/shirou/gopsutil/v4/disk"
 	"github.com/shirou/gopsutil/v4/host"
@@ -11,6 +12,8 @@ import (
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/sensors"
 )
+
+const procRoot = "/proc"
 
 // HostReader는 호스트 지표를 읽는다. 항목별로 실패할 수 있어 오류를 따로 돌려준다.
 type HostReader interface {
@@ -22,6 +25,8 @@ type HostReader interface {
 	// Temperature의 supported가 false면 이 환경에서 수집할 수 없다는 뜻이다.
 	Temperature(ctx context.Context) (celsius float64, supported bool, err error)
 	Boot(ctx context.Context) (bootTime time.Time, uptimeSeconds int64, err error)
+	// Listeners가 hostports.ErrUnsupported를 돌려주면 이 환경에서는 수집할 수 없다는 뜻이다.
+	Listeners(ctx context.Context) ([]hostports.Listener, map[string]bool, error)
 }
 
 // SystemHost는 실제 호스트 값을 읽는 구현이다.
@@ -88,6 +93,14 @@ func (h SystemHost) Temperature(ctx context.Context) (float64, bool, error) {
 		return 0, false, nil
 	}
 	return highest, true, err
+}
+
+func (h SystemHost) Listeners(context.Context) ([]hostports.Listener, map[string]bool, error) {
+	listeners, err := hostports.Scan(procRoot)
+	if err != nil {
+		return nil, nil, err
+	}
+	return listeners, hostports.RunningNames(procRoot), nil
 }
 
 func (h SystemHost) Boot(ctx context.Context) (time.Time, int64, error) {

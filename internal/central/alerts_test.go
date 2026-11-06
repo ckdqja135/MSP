@@ -428,6 +428,39 @@ func TestWebhookRetriesAndNeverLeaksURL(t *testing.T) {
 	}
 }
 
+func TestDeclaredHostServiceClosedFiresAlert(t *testing.T) {
+	store, notifier, engine := enrollLive(t)
+	ctx := context.Background()
+	withHost := func(at time.Time, services ...protocol.HostService) *protocol.Topology {
+		topology := runningAPI(at)
+		topology.HostServices = services
+		topology.Normalize()
+		return topology
+	}
+	guessed := protocol.HostService{Name: "sshd", Evidence: protocol.HostEvidenceName, Ports: []protocol.HostPort{{Port: 22}}}
+	closed := protocol.HostService{Name: "nginx", Evidence: protocol.HostEvidenceConfig, Ports: []protocol.HostPort{{Port: 80}}}
+	heartbeat(t, store, 1, baseTime, func(b *protocol.Batch) { b.Topology = withHost(baseTime, guessed, closed) })
+	if err := engine.Evaluate(ctx, baseTime.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.sent) != 0 {
+		t.Fatalf("1분 지속 전에 알렸다: %+v", notifier.sent)
+	}
+	later := baseTime.Add(61 * time.Second)
+	heartbeat(t, store, 2, later, nil)
+	if err := engine.Evaluate(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.sent) != 1 || notifier.sent[0].Alert.Target != "hostsvc:nginx" {
+		t.Fatalf("sent = %+v", notifier.sent)
+	}
+	for _, sent := range notifier.sent {
+		if strings.Contains(sent.Alert.Title, "sshd") {
+			t.Errorf("자동으로 찾은 서비스로 알렸다: %+v", sent)
+		}
+	}
+}
+
 func TestAlertsAPIListsActiveFirst(t *testing.T) {
 	store, _, engine := enrollLive(t)
 	ctx := context.Background()

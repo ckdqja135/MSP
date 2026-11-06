@@ -18,14 +18,15 @@ import (
 )
 
 type fileConfig struct {
-	CentralURL   string              `json:"central_url"`
-	ServerID     string              `json:"server_id"`
-	TokenFile    string              `json:"token_file"`
-	DockerSocket string              `json:"docker_socket"`
-	SpoolDir     string              `json:"spool_dir"`
-	SpoolMaxMB   int64               `json:"spool_max_mb"`
-	DiskPath     string              `json:"disk_path"`
-	Probes       []agent.ProbeConfig `json:"probes"`
+	CentralURL   string                      `json:"central_url"`
+	ServerID     string                      `json:"server_id"`
+	TokenFile    string                      `json:"token_file"`
+	DockerSocket string                      `json:"docker_socket"`
+	SpoolDir     string                      `json:"spool_dir"`
+	SpoolMaxMB   int64                       `json:"spool_max_mb"`
+	DiskPath     string                      `json:"disk_path"`
+	Probes       []agent.ProbeConfig         `json:"probes"`
+	HostServices []agent.DeclaredHostService `json:"host_services"`
 }
 
 func loadToken(config fileConfig) (string, error) {
@@ -72,12 +73,13 @@ func run() error {
 	}
 
 	instance, err := agent.New(agent.Config{
-		CentralURL: config.CentralURL,
-		ServerID:   config.ServerID,
-		Token:      token,
-		SpoolDir:   config.SpoolDir,
-		SpoolBytes: config.SpoolMaxMB << 20,
-		Probes:     config.Probes,
+		CentralURL:   config.CentralURL,
+		ServerID:     config.ServerID,
+		Token:        token,
+		SpoolDir:     config.SpoolDir,
+		SpoolBytes:   config.SpoolMaxMB << 20,
+		Probes:       config.Probes,
+		HostServices: config.HostServices,
 	}, dockerapi.New(config.DockerSocket), agent.SystemHost{DiskPath: config.DiskPath})
 	if err != nil {
 		return err

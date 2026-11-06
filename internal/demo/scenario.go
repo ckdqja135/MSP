@@ -187,6 +187,11 @@ func (s *Scenario) topologyAt(t time.Time) *protocol.Topology {
 		}
 		topology.Containers = append(topology.Containers, c)
 	}
+	topology.HostServices = []protocol.HostService{
+		{Name: "nginx", Evidence: protocol.HostEvidenceConfig, Listening: true, Ports: []protocol.HostPort{{IP: "0.0.0.0", Port: 8443}}},
+		{Name: "sshd", Evidence: protocol.HostEvidenceName, Listening: true, Ports: []protocol.HostPort{{IP: "0.0.0.0", Port: 22}}},
+		{Evidence: protocol.HostEvidenceUnknown, Listening: true, Ports: []protocol.HostPort{{IP: "0.0.0.0", Port: 9100}}},
+	}
 	topology.Normalize()
 	return topology
 }
@@ -410,6 +415,7 @@ func (s *Scenario) collectorStatus(at time.Time) []protocol.CollectorStatus {
 		{Name: "disk", State: protocol.CollectorOK, LastSuccess: &at},
 		diskIO,
 		{Name: "network", State: protocol.CollectorOK, LastSuccess: &at},
+		{Name: "host_services", State: protocol.CollectorOK, LastSuccess: &at},
 		{Name: "temperature", State: protocol.CollectorUnsupported, Error: "이 환경에서 온도 센서를 찾지 못했습니다"},
 	}
 }

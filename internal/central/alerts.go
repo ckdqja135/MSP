@@ -351,6 +351,18 @@ func (e *AlertEngine) conditions(ctx context.Context, server ServerView, now tim
 	if err != nil {
 		return nil, err
 	}
+	for _, service := range view.HostServices {
+		// 설정에 적은 서비스만 판단한다. 자동으로 찾은 포트는 닫혀도 의도한 종료일 수 있다.
+		if service.Evidence != protocol.HostEvidenceConfig {
+			continue
+		}
+		list = append(list, AlertCondition{
+			Key: "host_service:" + service.Name, Rule: "host_service_down", Target: "hostsvc:" + service.Name, Severity: protocol.SeverityCritical,
+			Title:  "호스트 서비스 " + service.Name + " 포트 닫힘",
+			Detail: "설정에 적은 포트가 열려 있지 않습니다.",
+			Active: !service.Listening, HoldFor: time.Minute,
+		})
+	}
 	for _, project := range view.Projects {
 		for _, service := range project.Services {
 			target := "svc:" + service.Key

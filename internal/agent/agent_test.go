@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
+	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/ckdqja135/MSP/internal/central"
 	"github.com/ckdqja135/MSP/internal/protocol"
 )
@@ -80,6 +81,9 @@ type fakeHost struct {
 	temperature   float64
 	tempSupported bool
 	rx, tx        uint64
+	listeners     []hostports.Listener
+	running       map[string]bool
+	listenErr     error
 }
 
 func (h *fakeHost) CPUPercent(context.Context) (float64, error)         { return 12, h.cpuErr }
@@ -91,6 +95,9 @@ func (h *fakeHost) Temperature(context.Context) (float64, bool, error) {
 	return h.temperature, h.tempSupported, nil
 }
 func (h *fakeHost) Boot(context.Context) (time.Time, int64, error) { return testStart, 3600, nil }
+func (h *fakeHost) Listeners(context.Context) ([]hostports.Listener, map[string]bool, error) {
+	return h.listeners, h.running, h.listenErr
+}
 
 // gate는 실제 중앙 서버 앞에서 장애를 흉내 낸다.
 type gate struct {
@@ -158,7 +165,7 @@ func newHarness(t *testing.T, spoolBytes int64, probes ...ProbeConfig) *harness 
 	t.Cleanup(ts.Close)
 
 	docker := &fakeDocker{stats: map[string]dockerapi.Stats{}}
-	host := &fakeHost{}
+	host := &fakeHost{listenErr: hostports.ErrUnsupported}
 	agent, err := New(Config{
 		CentralURL: ts.URL, ServerID: "home-1", Token: "token",
 		SpoolDir: filepath.Join(t.TempDir(), "spool"), SpoolBytes: spoolBytes, Probes: probes,
@@ -1092,5 +1099,137 @@ func TestBatchNeverContainsContainerSecrets(t *testing.T) {
 		if strings.Contains(strings.ToLower(string(body)), `"`+field+`"`) {
 			t.Errorf("전송 구조체에 %s 필드가 있다", field)
 		}
+	}
+}
+
+func hostServiceNamed(t *testing.T, services []protocol.HostService, name string) protocol.HostService {
+	t.Helper()
+	for _, service := range services {
+		if service.Name == name {
+			return service
+		}
+	}
+	t.Fatalf("%q 없음: %+v", name, services)
+	return protocol.HostService{}
+}
+
+func TestHostServicesExcludeDockerAndLoopback(t *testing.T) {
+	containers := []protocol.Container{{Ports: []protocol.PortBinding{{HostIP: "0.0.0.0", HostPort: 8080, ContainerPort: 80, Proto: "tcp"}}}}
+	services := deriveHostServices([]hostports.Listener{
+		{IP: "0.0.0.0", Port: 8080},
+		{IP: "127.0.0.1", Port: 631, Process: "cupsd"},
+		{IP: "0.0.0.0", Port: 9000, Process: "myapp"},
+	}, nil, containers, nil)
+	if len(services) != 1 || services[0].Name != "myapp" || services[0].Evidence != protocol.HostEvidenceOwner {
+		t.Errorf("services = %+v", services)
+	}
+}
+
+func TestHostServiceNameIsOnlyGuessedWithEvidence(t *testing.T) {
+	services := deriveHostServices([]hostports.Listener{
+		{IP: "0.0.0.0", Port: 80},
+		{IP: "0.0.0.0", Port: 443},
+		{IP: "0.0.0.0", Port: 9999},
+	}, map[string]bool{"nginx": true}, nil, nil)
+	nginx := hostServiceNamed(t, services, "nginx")
+	if nginx.Evidence != protocol.HostEvidenceName || len(nginx.Ports) != 2 {
+		t.Errorf("nginx = %+v", nginx)
+	}
+	unknown := hostServiceNamed(t, services, "")
+	if unknown.Evidence != protocol.HostEvidenceUnknown || unknown.Ports[0].Port != 9999 {
+		t.Errorf("모르는 포트에 이름을 붙였다: %+v", unknown)
+	}
+}
+
+func TestWellKnownPortWithoutProcessIsNotNamed(t *testing.T) {
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"sshd": true}, nil, nil)
+	if services[0].Name != "" {
+		t.Errorf("프로세스가 없는데 이름을 붙였다: %+v", services[0])
+	}
+}
+
+func TestSocketOwnerWinsOverGuess(t *testing.T) {
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80, Process: "myproxy"}}, map[string]bool{"nginx": true}, nil, nil)
+	if services[0].Name != "myproxy" || services[0].Evidence != protocol.HostEvidenceOwner {
+		t.Errorf("services = %+v", services)
+	}
+}
+
+func TestDeclaredServiceStaysVisibleWhenClosed(t *testing.T) {
+	declared := []DeclaredHostService{{Name: "nginx", Ports: []int{80, 443}}}
+	open := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, nil, nil, declared)
+	if !open[0].Listening || open[0].Evidence != protocol.HostEvidenceConfig {
+		t.Errorf("열림 = %+v", open[0])
+	}
+	closed := deriveHostServices(nil, nil, nil, declared)
+	if len(closed) != 1 || closed[0].Listening || len(closed[0].Ports) != 2 {
+		t.Errorf("닫힘 = %+v", closed)
+	}
+}
+
+func TestDeclaredLoopbackServiceIsIncluded(t *testing.T) {
+	declared := []DeclaredHostService{{Name: "local-db", Ports: []int{5432}}}
+	services := deriveHostServices([]hostports.Listener{{IP: "127.0.0.1", Port: 5432}}, nil, nil, declared)
+	if len(services) != 1 || services[0].Name != "local-db" || !services[0].Listening {
+		t.Errorf("services = %+v", services)
+	}
+}
+
+func TestHostServicesReachCentralAndChangesAreRecorded(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	ctx := context.Background()
+	h.host.listenErr = nil
+	h.host.listeners = []hostports.Listener{{IP: "0.0.0.0", Port: 9000, Process: "myapp"}}
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(ctx)
+	if len(h.agent.pending.Events) != 0 {
+		t.Errorf("첫 수집을 변화로 기록했다: %+v", h.agent.pending.Events)
+	}
+	h.flush(t)
+
+	h.clock.advance(time.Minute)
+	h.host.listeners = nil
+	h.agent.collectTopology(ctx)
+	if len(h.agent.pending.Events) != 1 || h.agent.pending.Events[0].Type != "host.port_closed" {
+		t.Fatalf("닫힘 기록 = %+v", h.agent.pending.Events)
+	}
+	if h.agent.pending.Topology == nil {
+		t.Error("호스트 포트가 바뀌었는데 구성이 전송되지 않았다")
+	}
+	h.flush(t)
+	h.drain(t)
+	events := h.events(t)
+	if len(events) != 1 || events[0].ServiceKey != "_host/myapp" {
+		t.Errorf("events = %+v", events)
+	}
+}
+
+func TestHostScanFailureKeepsLastKnownServices(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	ctx := context.Background()
+	h.host.listenErr = nil
+	h.host.listeners = []hostports.Listener{{IP: "0.0.0.0", Port: 9000, Process: "myapp"}}
+	h.agent.collectTopology(ctx)
+
+	h.host.listenErr = errors.New("읽기 실패")
+	h.agent.collectTopology(ctx)
+	if len(h.agent.topology.HostServices) != 1 {
+		t.Errorf("수집 실패를 포트 닫힘으로 처리했다: %+v", h.agent.topology.HostServices)
+	}
+	if h.agent.collectors["host_services"].State != protocol.CollectorError {
+		t.Errorf("collector = %+v", h.agent.collectors["host_services"])
+	}
+	for _, event := range h.agent.pending.Events {
+		if event.Type == "host.port_closed" {
+			t.Errorf("수집 실패인데 닫힘을 기록했다: %+v", event)
+		}
+	}
+}
+
+func TestUnsupportedPlatformIsNotAnError(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.agent.collectTopology(context.Background())
+	if h.agent.collectors["host_services"].State != protocol.CollectorUnsupported {
+		t.Errorf("collector = %+v", h.agent.collectors["host_services"])
 	}
 }

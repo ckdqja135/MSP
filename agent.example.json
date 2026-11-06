@@ -6,6 +6,9 @@
   "spool_dir": "/var/lib/msp-agent/spool",
   "spool_max_mb": 200,
   "disk_path": "/",
+  "host_services": [
+    { "name": "nginx", "ports": [80, 443] }
+  ],
   "probes": [
     { "service": "blog/api", "port": 8080, "path": "/health", "timeout_ms": 5000 }
   ]

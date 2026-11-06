@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
+	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/ckdqja135/MSP/internal/probe"
 	"github.com/ckdqja135/MSP/internal/protocol"
 )
@@ -68,13 +69,20 @@ type ProbeConfig struct {
 	TimeoutMS int64  `json:"timeout_ms"`
 }
 
+// DeclaredHostService는 사용자가 설정 파일에 적은 호스트 서비스다. 이름을 확정하고 포트가 닫히면 장애로 본다.
+type DeclaredHostService struct {
+	Name  string `json:"name"`
+	Ports []int  `json:"ports"`
+}
+
 type Config struct {
-	CentralURL string
-	ServerID   string
-	Token      string
-	SpoolDir   string
-	SpoolBytes int64
-	Probes     []ProbeConfig
+	CentralURL   string
+	ServerID     string
+	Token        string
+	SpoolDir     string
+	SpoolBytes   int64
+	Probes       []ProbeConfig
+	HostServices []DeclaredHostService
 }
 
 // ValidateCentralURL은 토큰이 평문으로 나가는 설정을 거부한다. 같은 장비 안의 시험만 예외로 둔다.
@@ -135,6 +143,7 @@ type Agent struct {
 	prevDiskIO  *rateSample
 	prevStats   map[string]statsSample
 	tempUnknown bool
+	hostScanned bool
 
 	topologyDirty chan struct{}
 	flushSoon     chan struct{}
@@ -278,10 +287,13 @@ func (a *Agent) collectTopology(ctx context.Context) {
 	if err != nil {
 		return
 	}
+	topology.HostServices = a.readHostServices(ctx, topology, now)
+	topology.Normalize()
 	services := make(map[string]string, len(topology.Containers))
 	for _, c := range topology.Containers {
 		services[c.ID] = c.ServiceKey()
 	}
+	a.recordHostChanges(topology.HostServices, now)
 	a.topology = topology
 	a.services = services
 	if topology.Hash != a.lastHash || now.Sub(a.lastTopologyAt) >= topologyResendEvery {
@@ -289,6 +301,89 @@ func (a *Agent) collectTopology(ctx context.Context) {
 		a.lastHash = topology.Hash
 		a.lastTopologyAt = now
 	}
+}
+
+// readHostServices는 호출자가 잠금을 잡은 상태에서 실행된다. /proc 읽기는 짧아 수집을 막지 않는다.
+func (a *Agent) readHostServices(ctx context.Context, topology *protocol.Topology, now time.Time) []protocol.HostService {
+	listeners, running, err := a.host.Listeners(ctx)
+	if errors.Is(err, hostports.ErrUnsupported) {
+		a.collectors["host_services"] = protocol.CollectorStatus{
+			Name: "host_services", State: protocol.CollectorUnsupported, Error: err.Error(),
+		}
+		return nil
+	}
+	a.setCollector("host_services", now, err)
+	if err != nil {
+		// 읽지 못한 것을 포트가 닫힌 것으로 보지 않는다. 직전 값을 유지한다.
+		if a.topology != nil {
+			return a.topology.HostServices
+		}
+		return nil
+	}
+	return deriveHostServices(listeners, running, topology.Containers, a.cfg.HostServices)
+}
+
+func hostServiceLabel(service protocol.HostService) string {
+	if service.Name == "" {
+		return "프로세스 미확인"
+	}
+	return service.Name
+}
+
+func portSet(service protocol.HostService) map[int]bool {
+	ports := make(map[int]bool, len(service.Ports))
+	for _, port := range service.Ports {
+		ports[port.Port] = true
+	}
+	return ports
+}
+
+// recordHostChanges는 호스트 포트가 열리거나 닫힌 순간을 흐름표에 남긴다. 첫 수집은 변화가 아니다.
+func (a *Agent) recordHostChanges(current []protocol.HostService, now time.Time) {
+	opened, closed := map[int]string{}, map[int]string{}
+	before := map[int]string{}
+	if a.topology != nil {
+		for _, service := range a.topology.HostServices {
+			if service.Listening {
+				for port := range portSet(service) {
+					before[port] = hostServiceLabel(service)
+				}
+			}
+		}
+	}
+	after := map[int]string{}
+	for _, service := range current {
+		if service.Listening {
+			for port := range portSet(service) {
+				after[port] = hostServiceLabel(service)
+			}
+		}
+	}
+	if !a.hostScanned {
+		a.hostScanned = current != nil
+		return
+	}
+	for port, name := range after {
+		if _, ok := before[port]; !ok {
+			opened[port] = name
+		}
+	}
+	for port, name := range before {
+		if _, ok := after[port]; !ok {
+			closed[port] = name
+		}
+	}
+	add := func(ports map[int]string, kind, verb string, severity protocol.Severity) {
+		for port, name := range ports {
+			a.pending.Events = append(a.pending.Events, protocol.Event{
+				OccurredAt: now, Category: protocol.CategoryOps, Type: kind, Severity: severity,
+				Source: "agent", Target: name, ServiceKey: protocol.ServiceKey(protocol.HostProject, name),
+				Summary: fmt.Sprintf("호스트 포트 %d %s", port, verb), Result: verb, Evidence: "proc-net",
+			})
+		}
+	}
+	add(opened, "host.port_open", "열림", protocol.SeverityInfo)
+	add(closed, "host.port_closed", "닫힘", protocol.SeverityWarning)
 }
 
 func (a *Agent) collectStats(ctx context.Context) {
