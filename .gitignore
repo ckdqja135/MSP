@@ -1,0 +1,23 @@
+# 런타임 데이터와 비밀값은 저장소에 올리지 않는다
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+!.env.example
+agent.json
+central.json
+
+# Go
+/bin/
+
+# Web
+node_modules/
+web/dist/
+*.tsbuildinfo
+
+# OS, 편집기
+.DS_Store
+.idea/
+.vscode/
