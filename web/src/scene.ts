@@ -369,6 +369,19 @@ export function routeBetween(scene: Scene, from: string, to: string): string | u
   return laneRoute(start, end, PUBLISH_LANE)
 }
 
+// hopRoute는 패킷 한 구간의 경로를 찾는다. 이미 그려진 선이 있으면 그 위로 지나가고, 반대 방향이면 거꾸로 간다.
+export function hopRoute(scene: Scene, from: string, to: string): { d: string; reverse: boolean; from: string; to: string } | undefined {
+  const a = visibleDevice(scene, from)
+  const b = visibleDevice(scene, to)
+  if (!a || !b || a === b) return undefined
+  const forward = scene.links.find((link) => link.from === a && link.to === b)
+  if (forward) return { d: forward.d, reverse: false, from: a, to: b }
+  const backward = scene.links.find((link) => link.from === b && link.to === a)
+  if (backward) return { d: backward.d, reverse: true, from: a, to: b }
+  const d = routeBetween(scene, a, b)
+  return d ? { d, reverse: false, from: a, to: b } : undefined
+}
+
 export type ServiceRole = 'database' | 'cache' | 'proxy' | 'storage' | 'web' | 'app'
 
 // serviceRole은 아이콘 모양을 고르기 위한 추정이다. 이미지와 서비스 이름만 보며 다른 판단에는 쓰지 않는다.

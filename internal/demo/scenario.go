@@ -65,7 +65,7 @@ var services = []service{
 		networks: []string{"blog_default"}, ipBase: 9},
 	{project: "blog", name: "web", image: "registry.test/blog-web:1.8", replica: 1,
 		networks: []string{"blog_default", "proxy"}, deps: []string{"api"},
-		ports: []protocol.PortBinding{{ContainerPort: 3000, Proto: "tcp"}},
+		ports: []protocol.PortBinding{{HostIP: "0.0.0.0", HostPort: 8080, ContainerPort: 3000, Proto: "tcp"}},
 		cpu:   3, memMB: 96, limitMB: 256, netKB: 140, ipBase: 4},
 	{project: "infra", name: "proxy", image: "caddy:2", replica: 1,
 		networks: []string{"proxy"},

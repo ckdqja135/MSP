@@ -5,9 +5,12 @@ import { BottomPanel } from './components/BottomPanel'
 import { TopBar } from './components/TopBar'
 import { Explorer } from './components/Explorer'
 import { DetailPanel } from './components/DetailPanel'
+import { FlowPanel, PLAY_LABEL } from './components/FlowPlayback'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
 import { timeMode, updateContext, useConsoleContext } from './context'
+import { observedScript, simulationScript, type FlowSource } from './flow'
 import { formatDateTime } from './format'
+import { useFlowPlayer } from './useFlowPlayer'
 import { useFlowRecords } from './useFlowRecords'
 
 const REFRESH_INTERVAL_MS = 3000
@@ -87,12 +90,32 @@ export function App() {
     }
   }, [selectedEvent])
 
+  // 통신 재생은 실제 기록을 먼저 보여주고, 없으면 시뮬레이션으로 시작한다.
+  const flowTab = context.tab === 'play'
+  const observed = useMemo(() => (topology.data ? observedScript(topology.data, context.target, meta.data?.mode === 'demo') : undefined), [topology.data, context.target, meta.data?.mode])
+  const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, context.target) : undefined), [topology.data, context.target])
+  const [sourceChoice, setSourceChoice] = useState<FlowSource | undefined>()
+  const source: FlowSource = sourceChoice === 'simulation' || !observed ? 'simulation' : 'observed'
+  const player = useFlowPlayer(source === 'observed' ? observed : simulation)
+  const resetPlayer = player.reset
+  useEffect(() => {
+    if (!flowTab) resetPlayer()
+  }, [flowTab, resetPlayer])
+  useEffect(() => {
+    resetPlayer()
+  }, [source, resetPlayer])
+
   // 선택한 것이 없으면 상세 패널을 닫아 그 폭을 구조도에 준다.
-  const detailOpen = Boolean(context.target || context.event)
+  const detailOpen = flowTab || Boolean(context.target || context.event)
   const [panelCollapsed, setPanelCollapsed] = useState(() => window.localStorage.getItem('msp.panel-collapsed') === '1')
   const togglePanel = () => {
     window.localStorage.setItem('msp.panel-collapsed', panelCollapsed ? '0' : '1')
     setPanelCollapsed(!panelCollapsed)
+  }
+  const playFromMap = () => {
+    if (!flowTab) updateContext({ tab: 'play' })
+    if (panelCollapsed) togglePanel()
+    player.toggle()
   }
 
   const pendingSinceFreeze = useQuery({
@@ -138,11 +161,12 @@ export function App() {
           {servers.data?.length === 0 && <p className="empty">등록된 서버가 없습니다. 아직 수신한 데이터가 없습니다.</p>}
           {topology.isError && server && <p className="empty">구조 데이터를 아직 받지 못했습니다.</p>}
           {server && topology.data && (
-            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} />
+            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} player={flowTab ? player : undefined} flowPlayLabel={PLAY_LABEL[player.status]} onFlowPlay={player.script ? playFromMap : undefined} />
           )}
         </section>
-        {detailOpen && <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />}
-        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} />
+        {flowTab && <FlowPanel player={player} />}
+        {detailOpen && !flowTab && <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />}
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} />
       </main>
     </div>
   )

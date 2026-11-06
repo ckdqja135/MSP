@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Container, HostService, Network, Project, Relation, Service, Topology } from './api'
-import { assignSlots, collapsedProjects, computeScene, emptySlots, hostServiceRole, isFinishedJob, routeBetween, serviceRole, visibleDevice } from './scene'
+import { assignSlots, collapsedProjects, computeScene, emptySlots, hopRoute, hostServiceRole, isFinishedJob, routeBetween, serviceRole, visibleDevice } from './scene'
 
 const container = (overrides: Partial<Container> = {}): Container =>
   ({ id: 'c', name: 'c', image: 'app:1', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: '', service: '', metrics: {}, ...overrides }) as Container
@@ -271,5 +271,38 @@ describe('프로젝트 접기', () => {
     const data = many()
     const slots = assignSlots(emptySlots(), data)
     expect(positions(data, slots, new Set(['a']))['svc:b/1']).toEqual(positions(data, slots)['svc:b/1'])
+  })
+})
+
+describe('패킷 구간 경로', () => {
+  const publishing = (port: number): Project => ({ key: 'blog', status: 'ok', services: [service('blog/api', [container({ ports: [{ host_ip: '0.0.0.0', host_port: port, container_port: port, proto: 'tcp' }] })]), service('blog/db')] })
+  const data = topology([publishing(80)])
+  const scene = computeScene(data, assignSlots(emptySlots(), data), new Set())
+
+  it('이미 있는 선을 따라간다', () => {
+    const route = hopRoute(scene, 'internet', 'host')!
+    expect(route.reverse).toBe(false)
+    expect(route.d).toBe(scene.links.find((link) => link.id === 'external')!.d)
+  })
+
+  it('돌아올 때는 같은 선을 거꾸로 간다', () => {
+    const route = hopRoute(scene, 'host', 'internet')!
+    expect(route.reverse).toBe(true)
+    expect(route.d).toBe(scene.links.find((link) => link.id === 'external')!.d)
+  })
+
+  it('선이 없으면 통로를 따라 새 경로를 만든다', () => {
+    const route = hopRoute(scene, 'svc:blog/api', 'svc:blog/db')!
+    expect(route.d.length).toBeGreaterThan(0)
+  })
+
+  it('접힌 프로젝트 안의 구간은 건너뛴다', () => {
+    const collapsed = computeScene(data, assignSlots(emptySlots(), data), new Set(['blog']))
+    expect(hopRoute(collapsed, 'svc:blog/api', 'svc:blog/db')).toBeUndefined()
+    expect(hopRoute(collapsed, 'host', 'svc:blog/api')?.to).toBe('stack:blog')
+  })
+
+  it('없는 장비로는 경로를 만들지 않는다', () => {
+    expect(hopRoute(scene, 'host', 'svc:blog/none')).toBeUndefined()
   })
 })

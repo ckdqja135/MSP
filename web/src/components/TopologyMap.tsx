@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  EdgeLabelRenderer,
   Handle,
   Panel,
   Position,
@@ -17,6 +18,7 @@ import '@xyflow/react/dist/style.css'
 import { diffActivities, eventActivity, mergeCallouts, type Activity } from '../activity'
 import type { EventRow, HostService, Network, Project, Server, Service, Topology } from '../api'
 import { updateContext } from '../context'
+import type { PacketKind } from '../flow'
 import { compactPorts, formatBytes, formatPercent, formatUptime, readMetric } from '../format'
 import {
   CELL_X,
@@ -25,6 +27,7 @@ import {
   collapsedProjects,
   computeScene,
   emptySlots,
+  hopRoute,
   hostServiceRole,
   routeBetween,
   serviceRole,
@@ -35,6 +38,7 @@ import {
   type SlotMemory,
 } from '../scene'
 import { HOST_EVIDENCE_TAG, STATUS_LABEL, hostServiceName, projectLabel, serviceHeadline } from '../status'
+import type { FlowPlayer } from '../useFlowPlayer'
 import { StatusIcon, UnsupportedIcon } from './Icons'
 import { CloudIcon, HostIcon, ServiceIcon, StackIcon, SwitchIcon } from './IsoIcons'
 
@@ -102,12 +106,14 @@ type DeviceFlags = {
   selected: boolean
   highlighted: boolean
   dimmed: boolean
+  // 재생 중 패킷이 아직 지나가지 않은 장비다.
+  flowHidden: boolean
   entering: boolean
   enterDelay: number
 }
 
 function deviceClasses(base: string, flags: DeviceFlags, extra?: string): string {
-  return [base, extra, flags.selected && 'selected', flags.highlighted && 'highlighted', flags.dimmed && 'dimmed', flags.entering && 'entering']
+  return [base, extra, flags.selected && 'selected', flags.highlighted && 'highlighted', flags.dimmed && 'dimmed', flags.flowHidden && 'flow-hidden', flags.entering && 'entering']
     .filter(Boolean)
     .join(' ')
 }
@@ -440,7 +446,67 @@ function IsoEdge({ id, data }: EdgeProps<Edge<LinkData, 'iso'>>) {
   )
 }
 
-const edgeTypes = { iso: IsoEdge }
+type PacketData = {
+  d: string
+  reverse: boolean
+  kind: PacketKind
+  title: string
+  detail: string
+  protocol: string
+  example: boolean
+  progress: () => number
+}
+
+// PacketEdge는 움직이는 패킷과 내용 카드를 그린다. 매 프레임 바뀌므로 React를 거치지 않고 직접 옮긴다.
+function PacketEdge({ data }: EdgeProps<Edge<PacketData, 'packet'>>) {
+  const { d, reverse, kind, title, detail, protocol, example, progress } = data!
+  const route = useRef<SVGPathElement>(null)
+  const trail = useRef<SVGPathElement>(null)
+  const dot = useRef<SVGCircleElement>(null)
+  const card = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    let raf = 0
+    const tick = () => {
+      const element = route.current
+      if (element) {
+        const length = element.getTotalLength()
+        const passed = length * progress()
+        const at = element.getPointAtLength(reverse ? length - passed : passed)
+        dot.current?.setAttribute('cx', String(at.x))
+        dot.current?.setAttribute('cy', String(at.y))
+        if (trail.current) {
+          trail.current.style.strokeDasharray = `${passed} ${length}`
+          trail.current.style.strokeDashoffset = reverse ? String(passed - length) : '0'
+        }
+        if (card.current) card.current.style.transform = `translate(-50%, -100%) translate(${at.x}px, ${at.y - 14}px)`
+      }
+      raf = requestAnimationFrame(tick)
+    }
+    tick()
+    return () => cancelAnimationFrame(raf)
+  }, [d, reverse, progress])
+
+  return (
+    <g className={`packet packet-${kind}`}>
+      <path ref={route} d={d} fill="none" stroke="none" />
+      <path ref={trail} d={d} fill="none" className="packet-trail" />
+      <circle ref={dot} className="packet-dot" r="6" />
+      <EdgeLabelRenderer>
+        <div ref={card} className={`packet-card packet-${kind}`}>
+          <div className="packet-card-title">
+            <span>{protocol}</span>
+            {example && <em>예시</em>}
+          </div>
+          <div className="packet-card-main">{title}</div>
+          <div className="packet-card-detail">{detail}</div>
+        </div>
+      </EdgeLabelRenderer>
+    </g>
+  )
+}
+
+const edgeTypes = { iso: IsoEdge, packet: PacketEdge }
 
 // IsoGrid는 장비와 함께 움직이는 등각 격자다.
 function IsoGrid() {
@@ -475,12 +541,18 @@ interface MapProps {
   focus: boolean
   // 패널을 열고 닫으면 맵 크기가 바뀌므로 다시 맞춘다. 장비의 위치는 바뀌지 않는다.
   layoutKey: string
+  player?: FlowPlayer
+  // 어느 탭에 있든 맵에서 바로 재생을 시작한다.
+  flowPlayLabel: string
+  onFlowPlay?: () => void
 }
 
 // 이 배율보다 작으면 이름과 상태만 크게 보여준다. 작은 글자는 어차피 읽히지 않는다.
 const FAR_ZOOM = 0.62
+const FLOW_PADDING = { top: '150px', bottom: '70px', left: '110px', right: '110px' } as const
+const FLOW_CAMERA_MS = 620
 
-function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus, layoutKey }: MapProps) {
+function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus, layoutKey, player, flowPlayLabel, onFlowPlay }: MapProps) {
   const { fitView } = useReactFlow()
   const slotKey = `msp.slots.${server.mode}.${server.id}`
   const collapseKey = `msp.collapse-overrides.${server.mode}.${server.id}`
@@ -592,6 +664,35 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     return selectedActivity ? [selectedActivity, ...list] : list
   }, [activities, selectedActivity, layers.activity])
 
+  // 재생 중에는 패킷이 지나간 장비만 또렷하게 보이고, 화면은 지금 패킷의 경로를 따라간다.
+  const playing = Boolean(player && player.status !== 'idle' && player.frame)
+  const frame = playing ? player!.frame : undefined
+  const flowRevealed = useMemo(
+    () => new Set((frame?.revealed ?? []).map((id) => visibleDevice(scene, id) ?? id)),
+    [frame?.revealed, scene],
+  )
+  const cameraKey = frame ? frame.camera.join('|') : ''
+  useEffect(() => {
+    if (!playing || !frame) return
+    userMoved.current = true
+    const ids = [...new Set(frame.camera.map((id) => visibleDevice(scene, id)).filter((id): id is string => Boolean(id)))]
+    if (ids.length > 0) fitView({ nodes: ids.map((id) => ({ id })), padding: FLOW_PADDING, maxZoom: 1.05, duration: FLOW_CAMERA_MS })
+    // 경로가 바뀔 때만 화면을 옮긴다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraKey, playing])
+  const wasPlaying = useRef(false)
+  useEffect(() => {
+    if (wasPlaying.current && !playing) {
+      userMoved.current = false
+      window.setTimeout(fitAll, 60)
+    }
+    wasPlaying.current = playing
+    // 재생이 끝나 개요로 돌아올 때만 다시 맞춘다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playing])
+
+  const currentPacket = frame && frame.phase !== 'overview' && frame.phase !== 'intro' && frame.phase !== 'done' ? player!.timeline?.packets[frame.packet] : undefined
+
   const selectedNetwork = target?.startsWith('net:') ? target.slice(4) : undefined
   // 네트워크를 선택하면 소속 서비스를 강조한다. 소속만 뜻하고 호출 관계는 뜻하지 않는다.
   const highlightedNodes = useMemo(() => {
@@ -606,8 +707,9 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       const highlighted = highlightedNodes.has(device.id)
       return {
         selected: target === device.id || (device.kind === 'stack' && target === `project:${device.project?.key}`),
-        highlighted,
-        dimmed: hasFocus && device.kind === 'service' && !highlighted && target !== device.id,
+        highlighted: !playing && highlighted,
+        dimmed: !playing && hasFocus && device.kind === 'service' && !highlighted && target !== device.id,
+        flowHidden: playing && !flowRevealed.has(device.id),
         entering: entering.has(device.id),
         enterDelay: firstDraw.current ? device.stage * STAGE_DELAY_MS : 0,
       }
@@ -661,7 +763,8 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       })
     }
 
-    for (const activity of mergeCallouts(shown).slice(0, MAX_CALLOUTS)) {
+    // 재생 중에는 평소의 설명 카드를 띄우지 않는다. 재생 내용과 섞이면 안 된다.
+    for (const activity of playing ? [] : mergeCallouts(shown).slice(0, MAX_CALLOUTS)) {
       const deviceID = visibleDevice(scene, activity.to)
       const device = scene.devices.find((item) => item.id === deviceID)
       if (!device) continue
@@ -681,7 +784,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     return result
     // toggleCollapsed는 collapsed에서 파생된다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scene, topology, server, target, now, highlightedNodes, hasFocus, collapsedSet, entering, shown])
+  }, [scene, topology, server, target, now, highlightedNodes, hasFocus, collapsedSet, entering, shown, playing, flowRevealed])
 
   const edges = useMemo(() => {
     const result: Edge[] = []
@@ -694,14 +797,15 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       if (portLink && !layers.ports) continue
       if (link.kind === 'declared' && !layers.declared) continue
       if (link.kind === 'member' && !layers.networks && link.from !== target && link.to !== target) continue
-      const lit = focusIDs.has(link.from) || focusIDs.has(link.to)
+      const lit = !playing && (focusIDs.has(link.from) || focusIDs.has(link.to))
       const isEntering = entering.has(link.id)
+      const flowHiddenLink = playing && !(flowRevealed.has(link.from) && flowRevealed.has(link.to))
       result.push({
         id: link.id,
         type: 'iso',
         source: link.from,
         target: link.to,
-        className: [`edge-${link.kind}`, lit && 'lit', anyFocus && !lit && 'faded'].filter(Boolean).join(' '),
+        className: [`edge-${link.kind}`, lit && 'lit', !playing && anyFocus && !lit && 'faded', flowHiddenLink && 'flow-hidden'].filter(Boolean).join(' '),
         selectable: false,
         focusable: false,
         data: {
@@ -715,8 +819,9 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       })
     }
 
+    // 재생 중에는 평소의 응답 확인 경로를 함께 그리지 않는다. 재생 내용과 섞이면 안 된다.
     const drawn = new Set<string>()
-    for (const activity of shown) {
+    for (const activity of playing ? [] : shown) {
       if (!activity.from || drawn.has(activity.id)) continue
       const d = routeBetween(scene, activity.from, activity.to)
       if (!d) continue
@@ -733,8 +838,39 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
         data: { d, marker: activity.tone === 'fail' ? 'iso-arrow-fail' : 'iso-arrow-active', dot: true },
       })
     }
+
+    if (currentPacket && frame && player) {
+      const lastHop = Math.min(frame.hop, currentPacket.path.length - 2)
+      for (let hop = 0; hop <= lastHop; hop++) {
+        const route = hopRoute(scene, currentPacket.path[hop], currentPacket.path[hop + 1])
+        if (!route) continue
+        const moving = hop === lastHop
+        result.push({
+          id: moving ? `packet:${currentPacket.id}:${hop}` : `packet-done:${currentPacket.id}:${hop}`,
+          type: moving ? 'packet' : 'iso',
+          source: route.from,
+          target: route.to,
+          className: moving ? 'edge-packet' : `edge-packet-done packet-${currentPacket.kind}`,
+          selectable: false,
+          focusable: false,
+          zIndex: 6,
+          data: moving
+            ? {
+                d: route.d,
+                reverse: route.reverse,
+                kind: currentPacket.kind,
+                title: currentPacket.title,
+                detail: currentPacket.detail,
+                protocol: currentPacket.protocol,
+                example: player.script?.source === 'simulation',
+                progress: player.progress,
+              }
+            : { d: route.d },
+        })
+      }
+    }
     return result
-  }, [scene, layers, target, highlightedNodes, entering, shown])
+  }, [scene, layers, target, highlightedNodes, entering, shown, playing, flowRevealed, currentPacket, frame, player])
 
   return (
     <ReactFlow
@@ -752,7 +888,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       onMoveStart={(event) => {
         if (event) userMoved.current = true
       }}
-      className={zoom < FAR_ZOOM ? 'lod-far' : ''}
+      className={[zoom < FAR_ZOOM && 'lod-far', playing && 'flow-playing'].filter(Boolean).join(' ')}
       onNodeClick={(_, node) => {
         if (node.type === 'internet' || node.type === 'callout') return
         if (node.id === 'hostplate') {
@@ -769,6 +905,9 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     >
       <IsoGrid />
       <Panel position="top-left" className="map-tools">
+        <button type="button" className="tool-button map-play-button" disabled={!onFlowPlay} title={onFlowPlay ? '통신 재생을 시작하거나 멈춥니다' : '재생할 경로가 없습니다'} onClick={onFlowPlay}>
+          {flowPlayLabel}
+        </button>
         <span className="tool-title">표시</span>
         <label>
           <input type="checkbox" checked={layers.ports} onChange={(e) => setLayers({ ...layers, ports: e.target.checked })} />
@@ -811,7 +950,12 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
         <span><i className="line declared" />선언 의존 (호출 미확인)</span>
         <span><i className="line activity" />실제 응답 확인</span>
       </Panel>
-      {highlight.note && (
+      {player?.script && (
+        <Panel position="top-right" className={`map-flow-tag ${player.script.source} ${server.mode === 'demo' ? 'demo' : ''}`} role="status">
+          {player.script.source === 'simulation' ? '시뮬레이션: 실제 통신이 아닙니다' : server.mode === 'demo' ? '데모 기록: 가짜 데이터입니다' : '실제 응답 확인 기록'}
+        </Panel>
+      )}
+      {highlight.note && !player && (
         <Panel position="top-right" className="map-note">
           {highlight.note}
         </Panel>

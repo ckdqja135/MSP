@@ -4,7 +4,10 @@ import type { EventRow, GapRow, Meta, Server, Topology } from '../api'
 import { parseTarget, updateContext, type ConsoleContext } from '../context'
 import { formatClock, formatDuration, formatSize, isLateArrival } from '../format'
 import { CATEGORY_LABEL, UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
+import type { FlowSource } from '../flow'
+import type { FlowPlayer } from '../useFlowPlayer'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
+import { FlowControls, FlowPacketTable } from './FlowPlayback'
 import { StatusIcon } from './Icons'
 import { LogsPanel } from './LogsPanel'
 import { MetricsPanel } from './MetricsPanel'
@@ -157,9 +160,13 @@ interface Props {
   now: number
   collapsed: boolean
   onToggleCollapsed: () => void
+  player: FlowPlayer
+  source: FlowSource
+  sources: Record<FlowSource, boolean>
+  onSource: (source: FlowSource) => void
 }
 
-export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed }: Props) {
+export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed, player, source, sources, onSource }: Props) {
   const selectedCategories = context.categories ? context.categories.split(',') : Object.keys(CATEGORY_LABEL)
   const toggleCategory = (category: string) => {
     const next = selectedCategories.includes(category)
@@ -179,6 +186,7 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
         <div className="tabs" role="tablist">
           {[
             ['flow', '이벤트 흐름표'],
+            ['play', '통신 재생'],
             ['metrics', '지표'],
             ['logs', '로그'],
           ].map(([id, text]) => (
@@ -219,6 +227,12 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
           </>
         )}
       </div>
+      {!collapsed && context.tab === 'play' && (
+        <>
+          <FlowControls player={player} source={source} sources={sources} onSource={onSource} demo={meta?.mode === 'demo'} />
+          <FlowPacketTable player={player} source={source} />
+        </>
+      )}
       {!collapsed && context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}
       {!collapsed && context.tab === 'metrics' && server && (
         <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} />
