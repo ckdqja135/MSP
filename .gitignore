@@ -9,6 +9,9 @@ data/
 agent.json
 central.json
 
+# 설계 문서는 저장소 밖에서 관리한다
+docs/
+
 # Go
 /bin/
 
