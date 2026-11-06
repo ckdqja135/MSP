@@ -14,6 +14,8 @@ export interface ConsoleContext {
   tab: string
   categories?: string
   errors?: string
+  // focus가 있으면 구조도가 대상 장비로 화면을 옮긴다. 알림 링크에서 쓴다.
+  focus?: string
 }
 
 export const RANGES: Record<string, number> = {
@@ -40,6 +42,7 @@ export function parseContext(search: string): ConsoleContext {
     tab: params.get('tab') ?? 'flow',
     categories: params.get('categories') ?? undefined,
     errors: params.get('errors') ?? undefined,
+    focus: params.get('focus') ?? undefined,
   }
 }
 

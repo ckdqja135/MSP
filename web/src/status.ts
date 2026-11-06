@@ -16,6 +16,8 @@ export function serviceHeadline(service: Service): string {
       switch (service.response) {
         case 'down':
           return '실행 중 / 무응답'
+        case 'external_path':
+          return '실행 중 / 외부 경로 문제 의심'
         case 'failing':
           return '실행 중 / 응답 확인 실패'
         case 'ok':
@@ -67,6 +69,9 @@ const TYPE_LABEL: Record<string, string> = {
   'resource.cpu': 'CPU 경고',
   'resource.memory': '메모리 경고',
   'resource.disk': '디스크 경고',
+  'alert.fired': '알림 발생',
+  'alert.resolved': '알림 복구',
+  'alert.flapping': '반복 발생',
 }
 
 export function typeLabel(type: string): string {
@@ -90,6 +95,7 @@ const EVIDENCE_LABEL: Record<string, string> = {
   probe: '응답 확인',
   threshold: '임계값 판정',
   'agent-receive': '수신 기록',
+  'alert-rule': '알림 규칙',
 }
 
 export function evidenceLabel(evidence: string): string {
@@ -100,4 +106,5 @@ export const CATEGORY_LABEL: Record<string, string> = {
   ops: '운영',
   probe: '응답 확인',
   resource: '자원',
+  alert: '알림',
 }

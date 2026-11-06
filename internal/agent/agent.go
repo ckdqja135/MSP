@@ -20,10 +20,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
+	"github.com/ckdqja135/MSP/internal/probe"
 	"github.com/ckdqja135/MSP/internal/protocol"
 )
 
@@ -162,7 +162,7 @@ func New(cfg Config, docker Docker, host HostReader) (*Agent, error) {
 		host:          host,
 		spool:         spool,
 		client:        &http.Client{Timeout: sendTimeout},
-		probes:        &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+		probes:        probe.NewClient(),
 		now:           now,
 		epoch:         hex.EncodeToString(raw),
 		startedAt:     now().UnixNano(),
@@ -441,40 +441,10 @@ func (a *Agent) probe(ctx context.Context, config ProbeConfig, topology *protoco
 		return result
 	}
 
-	requestCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
 	target := "http://" + net.JoinHostPort(address, strconv.Itoa(config.Port)) + path
-	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, target, nil)
-	if err != nil {
-		result.Failure = "other"
-		return result
-	}
-	started := time.Now()
-	response, err := a.probes.Do(request)
-	if err != nil {
-		result.Failure = classifyProbeError(err)
-		return result
-	}
-	response.Body.Close()
-	latency := time.Since(started).Milliseconds()
-	result.LatencyMS = &latency
-	if response.StatusCode >= http.StatusBadRequest {
-		result.Failure = "status"
-		return result
-	}
-	result.OK = true
+	checked := probe.Run(ctx, a.probes, target, timeout)
+	result.OK, result.Failure, result.LatencyMS = checked.OK, checked.Failure, checked.LatencyMS
 	return result
-}
-
-func classifyProbeError(err error) string {
-	var netErr net.Error
-	if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout()) {
-		return "timeout"
-	}
-	if errors.Is(err, syscall.ECONNREFUSED) {
-		return "refused"
-	}
-	return "other"
 }
 
 // handleDockerEvent는 흐름표 행을 만들고 구성 재조회를 요청한다.

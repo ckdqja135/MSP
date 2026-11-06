@@ -64,13 +64,21 @@ func (s *Store) Servers(ctx context.Context, now time.Time) ([]ServerView, error
 		if v.Collectors == nil {
 			v.Collectors = []protocol.CollectorStatus{}
 		}
-		v.Reachability = reachabilityOf(seen, now, v.DockerOK)
 		servers = append(servers, v)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	for i := range servers {
+		var seen time.Time
+		if servers[i].LastSeen != nil {
+			seen = *servers[i].LastSeen
+		}
+		externalOK, err := s.externalResponding(ctx, servers[i].ID, now)
+		if err != nil {
+			return nil, err
+		}
+		servers[i].Reachability = reachabilityOf(seen, now, servers[i].DockerOK, externalOK)
 		latest, err := s.latestSamples(ctx, servers[i].ID, now)
 		if err != nil {
 			return nil, err
@@ -81,6 +89,16 @@ func (s *Store) Servers(ctx context.Context, now time.Time) ([]ServerView, error
 		}
 	}
 	return servers, nil
+}
+
+// externalResponding은 최근 외부 응답 확인에 성공한 서비스가 있는지 돌려준다.
+func (s *Store) externalResponding(ctx context.Context, serverID string, now time.Time) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM probe_states
+		WHERE server_id = ? AND vantage = 'external' AND state = 'ok' AND last_checked > ?`,
+		serverID, now.Add(-latestWindow).UnixMilli()).Scan(&count)
+	return count > 0, err
 }
 
 // latestWindow보다 오래된 값은 최신값으로 내주지 않는다. 멈춘 값을 현재 값처럼 보이지 않게 하기 위해서다.

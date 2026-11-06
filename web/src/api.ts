@@ -1,5 +1,5 @@
 export type Status = 'ok' | 'warning' | 'critical' | 'stopped' | 'disconnected'
-export type Response = 'ok' | 'failing' | 'down' | 'unconfirmed' | 'historical'
+export type Response = 'ok' | 'failing' | 'down' | 'unconfirmed' | 'historical' | 'external_path'
 
 export interface LatestValue {
   value: number
@@ -208,3 +208,20 @@ export function fetchSamples(server: string, scope: string, names: string[], fro
   names.forEach((name) => params.append('name', name))
   return get<SamplesResponse>(`/servers/${encodeURIComponent(server)}/samples`, params)
 }
+
+export interface Alert {
+  id: number
+  server_id: string
+  rule: string
+  target: string
+  severity: 'info' | 'warning' | 'critical'
+  state: 'firing' | 'flapping' | 'resolved'
+  title: string
+  detail: string
+  fired_at: string | null
+  resolved_at: string | null
+  last_notified_at: string | null
+  notify_count: number
+}
+
+export const fetchAlerts = () => get<Alert[]>('/alerts')

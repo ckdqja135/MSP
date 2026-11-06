@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -59,8 +60,33 @@ func enroll(args []string) error {
 	return nil
 }
 
+// fileConfig는 선택 설정이다. 웹훅 주소에 비밀값이 들어가므로 저장소에 올리지 않는다.
+type fileConfig struct {
+	PublicURL        string                  `json:"public_url"`
+	AlertWebhookURL  string                  `json:"alert_webhook_url"`
+	HeartbeatURL     string                  `json:"heartbeat_url"`
+	ConnectivityURLs []string                `json:"connectivity_urls"`
+	ExternalProbes   []central.ExternalProbe `json:"external_probes"`
+}
+
+func loadConfig(path string) (fileConfig, error) {
+	var config fileConfig
+	if path == "" {
+		return config, nil
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return config, fmt.Errorf("설정 파일을 읽지 못했습니다: %w", err)
+	}
+	if err := json.Unmarshal(body, &config); err != nil {
+		return config, fmt.Errorf("설정 파일 형식이 잘못되었습니다: %w", err)
+	}
+	return config, nil
+}
+
 func serve(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
+	configPath := flags.String("config", "", "선택 설정 파일 경로")
 	listen := flags.String("listen", "127.0.0.1:8787", "접속 주소")
 	dbPath := flags.String("db", "", "DB 파일 경로 (기본: data/msp.db, 데모: data/demo.db)")
 	webDir := flags.String("web-dir", "web/dist", "웹 화면 빌드 경로")
@@ -103,6 +129,28 @@ func serve(args []string) error {
 		}
 	}
 	go purgeLoop(ctx, store)
+
+	settings, err := loadConfig(*configPath)
+	if err != nil {
+		return err
+	}
+	// 데모는 외부로 아무것도 보내지 않는다.
+	var notifier central.Notifier
+	if !*demoMode && settings.AlertWebhookURL != "" {
+		notifier = central.WebhookNotifier{URL: settings.AlertWebhookURL, Attempts: 3, Backoff: 2 * time.Second}
+	}
+	startedAt := time.Now().UTC()
+	if *demoMode {
+		// 데모는 처음부터 데이터가 있으므로 판정을 미루지 않는다.
+		startedAt = startedAt.Add(-time.Hour)
+	}
+	engine := central.NewAlertEngine(store, notifier, app.Hub(), settings.PublicURL, startedAt)
+	engine.SelfCheck = central.ConnectivityCheck(settings.ConnectivityURLs)
+	go engine.Run(ctx, 10*time.Second)
+	if !*demoMode {
+		go app.RunExternalProbes(ctx, settings.ExternalProbes, 30*time.Second)
+		go central.RunHeartbeat(ctx, settings.HeartbeatURL, time.Minute)
+	}
 
 	srv := &http.Server{Addr: *listen, Handler: app.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() {

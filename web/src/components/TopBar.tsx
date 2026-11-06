@@ -1,4 +1,5 @@
 import type { Meta, Server, Topology } from '../api'
+import { AlertsMenu } from './AlertsMenu'
 import { RANGES, timeMode, updateContext, type ConsoleContext } from '../context'
 import { formatAge, formatDateTime } from '../format'
 import { Logo, StatusIcon } from './Icons'
@@ -80,6 +81,8 @@ export function TopBar({ meta, servers, server, topology, context, now, streamCo
 
       <div className="spacer" />
 
+      <AlertsMenu demo={meta?.mode === 'demo'} />
+
       {!streamConnected && <span className="badge warning" title="화면에는 마지막으로 받은 값이 표시됩니다">중앙 서버 연결 끊김</span>}
 
       <label className="field">
@@ -99,7 +102,7 @@ export function TopBar({ meta, servers, server, topology, context, now, streamCo
         <button
           type="button"
           className={mode === 'live' ? 'active' : ''}
-          onClick={() => updateContext({ frozen: undefined, from: undefined, to: undefined, at: undefined })}
+          onClick={() => updateContext({ frozen: undefined, from: undefined, to: undefined, at: undefined, focus: undefined })}
         >
           <i className="live-dot" />실시간
         </button>

@@ -100,6 +100,8 @@ func NewServer(store *Store, hub *Hub, cfg Config) *Server {
 	return &Server{store: store, hub: hub, cfg: cfg, logs: relay, now: func() time.Time { return time.Now().UTC() }}
 }
 
+func (s *Server) Hub() *Hub { return s.hub }
+
 func (s *Server) Handler() http.Handler {
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/v1/meta", s.handleMeta)
@@ -109,6 +111,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/v1/servers/{id}/gaps", s.handleGaps)
 	api.HandleFunc("GET /api/v1/servers/{id}/samples", s.handleSamples)
 	api.HandleFunc("GET /api/v1/servers/{id}/logs", s.handleLogs)
+	api.HandleFunc("GET /api/v1/alerts", s.handleAlerts)
 	api.HandleFunc("GET /api/v1/stream", s.handleStream)
 	if s.cfg.WebDir != "" {
 		api.Handle("GET /", spaHandler(s.cfg.WebDir))
@@ -223,6 +226,15 @@ func (s *Server) handleMeta(w http.ResponseWriter, _ *http.Request) {
 			"stored_logs":     "not_connected",
 		},
 	})
+}
+
+func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
+	alerts, err := s.store.Alerts(r.Context(), s.now())
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, alerts)
 }
 
 func (s *Server) handleServers(w http.ResponseWriter, r *http.Request) {

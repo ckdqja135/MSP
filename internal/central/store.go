@@ -126,7 +126,7 @@ func OpenStore(path string, mode protocol.Mode) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := db.Exec(schema); err != nil {
+	if _, err := db.Exec(schema + alertSchema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("스키마 적용 실패: %w", err)
 	}
@@ -157,7 +157,7 @@ func (s *Store) ResetDemo(ctx context.Context) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	for _, table := range []string{"servers", "ingest_cursors", "topology_versions", "events", "samples", "gaps", "probe_states"} {
+	for _, table := range []string{"servers", "ingest_cursors", "topology_versions", "events", "samples", "gaps", "probe_states", "alerts", "notification_deliveries"} {
 		if _, err := s.db.ExecContext(ctx, "DELETE FROM "+table); err != nil {
 			return err
 		}

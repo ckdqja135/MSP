@@ -23,11 +23,12 @@ const (
 )
 
 const (
-	ResponseOK          = "ok"
-	ResponseFailing     = "failing"
-	ResponseDown        = "down"
-	ResponseUnconfirmed = "unconfirmed"
-	ResponseHistorical  = "historical"
+	ResponseOK           = "ok"
+	ResponseFailing      = "failing"
+	ResponseDown         = "down"
+	ResponseUnconfirmed  = "unconfirmed"
+	ResponseHistorical   = "historical"
+	ResponseExternalPath = "external_path"
 )
 
 // 관계 유형이다. 같은 네트워크 소속으로 서비스 간 관계를 만드는 유형은 두지 않는다.
@@ -108,12 +109,15 @@ type Reachability struct {
 	Detail string `json:"detail"`
 }
 
-func reachabilityOf(lastSeen, now time.Time, dockerOK bool) Reachability {
+func reachabilityOf(lastSeen, now time.Time, dockerOK, externalOK bool) Reachability {
 	if lastSeen.IsZero() {
 		return Reachability{State: "unknown", Label: "수신 기록 없음", Detail: "에이전트 데이터를 받은 적이 없습니다."}
 	}
 	age := now.Sub(lastSeen)
 	switch {
+	case age >= heartbeatLostAfter && externalOK:
+		return Reachability{State: "agent_lost", Label: "에이전트 또는 연결 문제, 서비스는 응답 중",
+			Detail: "에이전트 수신은 끊겼지만 외부에서 서비스가 응답합니다. 서버가 멈췄다고 볼 수 없습니다."}
 	case age >= heartbeatLostAfter:
 		return Reachability{State: "lost", Label: "서버 응답 없음, 원인 미상",
 			Detail: "에이전트 수신이 끊겼습니다. 전원, OS, 네트워크, 에이전트 중 무엇이 원인인지는 이 정보만으로 알 수 없습니다."}
@@ -180,6 +184,9 @@ func rollupService(containers []protocol.Container, probes []ProbeView, fresh, h
 			}
 		}
 	}
+	if onlyExternalFails(probes) {
+		response = ResponseExternalPath
+	}
 
 	status = StatusOK
 	if !fresh {
@@ -221,7 +228,27 @@ func rollupService(containers []protocol.Container, probes []ProbeView, fresh, h
 	if response == ResponseFailing {
 		raise(StatusWarning, "응답 확인이 일시적으로 실패했습니다. 아직 장애로 판단하지 않습니다.")
 	}
+	if response == ResponseExternalPath {
+		raise(StatusWarning, "외부 경로 문제 의심: 내부 응답은 정상이지만 외부 응답이 실패합니다.")
+	}
 	return status, runtime, response, reasons
+}
+
+// onlyExternalFails는 안에서는 응답하는데 밖에서만 실패하는 경우를 찾는다.
+func onlyExternalFails(probes []ProbeView) bool {
+	internalOK, externalBad := false, false
+	for _, p := range probes {
+		switch p.Vantage {
+		case protocol.VantageInternal:
+			if p.State != probeOK {
+				return false
+			}
+			internalOK = true
+		case protocol.VantageExternal:
+			externalBad = externalBad || p.State == probeDown
+		}
+	}
+	return internalOK && externalBad
 }
 
 func statusRank(status string) int {

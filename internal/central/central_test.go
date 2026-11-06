@@ -199,6 +199,9 @@ func TestRollupDistinguishesRuntimeFromResponse(t *testing.T) {
 		{"비정상 종료는 장애", []protocol.Container{{State: "exited", ExitCode: 137, Health: "none"}}, nil, true, StatusCritical, ResponseUnconfirmed},
 		{"정상 종료는 장애가 아님", []protocol.Container{{State: "exited", ExitCode: 0, Health: "none"}}, nil, true, StatusStopped, ResponseUnconfirmed},
 		{"일회성 작업 실패는 서비스 장애가 아님", []protocol.Container{{State: "exited", ExitCode: 1, OneOff: true, Health: "none"}}, nil, true, StatusStopped, ResponseUnconfirmed},
+		{"안에서만 응답하면 외부 경로 의심", []protocol.Container{running}, []ProbeView{{Vantage: protocol.VantageInternal, State: probeOK}, {Vantage: protocol.VantageExternal, State: probeDown}}, true, StatusWarning, ResponseExternalPath},
+		{"내부도 실패하면 서비스 장애", []protocol.Container{running}, []ProbeView{{Vantage: protocol.VantageInternal, State: probeDown}, {Vantage: protocol.VantageExternal, State: probeDown}}, true, StatusCritical, ResponseDown},
+		{"외부 일시 실패는 아직 경로 문제로 보지 않음", []protocol.Container{running}, []ProbeView{{Vantage: protocol.VantageInternal, State: probeOK}, {Vantage: protocol.VantageExternal, State: probeFailing}}, true, StatusWarning, ResponseFailing},
 		{"unhealthy는 장애", []protocol.Container{{State: "running", Health: "unhealthy"}}, nil, true, StatusCritical, ResponseUnconfirmed},
 	}
 	for _, tc := range cases {
@@ -266,7 +269,7 @@ func TestReachabilityNeverClaimsACause(t *testing.T) {
 		{5 * time.Minute, "lost"},
 	}
 	for _, tc := range cases {
-		r := reachabilityOf(now.Add(-tc.age), now, true)
+		r := reachabilityOf(now.Add(-tc.age), now, true, false)
 		if r.State != tc.state {
 			t.Errorf("age %v: %s, want %s", tc.age, r.State, tc.state)
 		}
@@ -274,8 +277,11 @@ func TestReachabilityNeverClaimsACause(t *testing.T) {
 			t.Errorf("원인을 단정했다: %s", r.Label)
 		}
 	}
-	if r := reachabilityOf(now, now, false); r.State != "docker_down" {
+	if r := reachabilityOf(now, now, false, false); r.State != "docker_down" {
 		t.Errorf("Docker 중단 구분 실패: %+v", r)
+	}
+	if r := reachabilityOf(now.Add(-5*time.Minute), now, true, true); r.State != "agent_lost" || strings.Contains(r.Label, "서버 응답 없음") {
+		t.Errorf("외부 응답이 있는데 서버 장애로 표시했다: %+v", r)
 	}
 }
 

@@ -120,7 +120,7 @@ export function App() {
       {mode === 'past' && (
         <div className="freeze-banner" role="status">
           과거 구간을 보고 있습니다. 구조맵은 {historicalAt ? formatDateTime(historicalAt) : ''} 시점입니다.
-          <button type="button" className="link" onClick={() => updateContext({ from: undefined, to: undefined, at: undefined })}>실시간으로 돌아가기</button>
+          <button type="button" className="link" onClick={() => updateContext({ from: undefined, to: undefined, at: undefined, focus: undefined })}>실시간으로 돌아가기</button>
         </div>
       )}
       <main className="workspace">
@@ -130,7 +130,7 @@ export function App() {
           {servers.data?.length === 0 && <p className="empty">등록된 서버가 없습니다. 아직 수신한 데이터가 없습니다.</p>}
           {topology.isError && server && <p className="empty">구조 데이터를 아직 받지 못했습니다.</p>}
           {server && topology.data && (
-            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} />
+            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} />
           )}
         </section>
         <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />

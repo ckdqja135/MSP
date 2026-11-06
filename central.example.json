@@ -1,0 +1,9 @@
+{
+  "public_url": "https://central.example.test",
+  "alert_webhook_url": "https://hooks.example.test/비밀값이_들어가는_주소",
+  "heartbeat_url": "https://heartbeat.example.test/ping/비밀값",
+  "connectivity_urls": ["https://example.org", "https://example.net"],
+  "external_probes": [
+    { "server": "home-1", "service": "blog/web", "url": "https://blog.example.test/", "timeout_ms": 5000 }
+  ]
+}

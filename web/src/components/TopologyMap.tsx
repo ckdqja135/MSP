@@ -372,9 +372,10 @@ interface MapProps {
   now: number
   live: boolean
   selectedEvent?: EventRow
+  focus: boolean
 }
 
-function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent }: MapProps) {
+function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus }: MapProps) {
   const { fitView } = useReactFlow()
   const slotKey = `msp.slots.${server.mode}.${server.id}`
   const collapseKey = `msp.collapsed.${server.mode}.${server.id}`
@@ -409,6 +410,14 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     userMoved.current = false
     window.setTimeout(fitAll, 60)
   }
+
+  // 알림에서 들어오면 대상 장비로 화면을 옮긴다.
+  useEffect(() => {
+    if (!focus || !target) return
+    userMoved.current = true
+    const timer = window.setTimeout(() => fitView({ nodes: [{ id: target }], maxZoom: 1.1, padding: 1.1, duration: 450 }), 300)
+    return () => window.clearTimeout(timer)
+  }, [focus, target, fitView])
 
   // 새로 나타난 장비와 선을 찾아 한 번만 그리는 효과를 준다. 사용자가 화면을 옮기지 않았다면 전체가 보이게 맞춘다.
   const seen = useRef<Set<string> | null>(null)
