@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"sort"
+	"strconv"
 	"time"
 )
 
@@ -31,6 +32,7 @@ type Batch struct {
 	Events          []Event    `json:"events,omitempty"`
 	Samples         []Sample   `json:"samples,omitempty"`
 	Gaps            []Gap      `json:"gaps,omitempty"`
+	Probes          []Probe    `json:"probes,omitempty"`
 }
 
 type Ack struct {
@@ -144,10 +146,12 @@ type Event struct {
 	ContainerID string        `json:"container_id,omitempty"`
 	Summary     string        `json:"summary"`
 	DurationMS  *int64        `json:"duration_ms,omitempty"`
-	Bytes       *int64        `json:"bytes,omitempty"`
-	Result      string        `json:"result,omitempty"`
-	Evidence    string        `json:"evidence"`
-	Aggregated  int           `json:"aggregated,omitempty"`
+	// DurationLimitMS는 제한 시간까지 응답이 없었음을 뜻한다. 실제 소요 시간이 아니다.
+	DurationLimitMS *int64 `json:"duration_limit_ms,omitempty"`
+	Bytes           *int64 `json:"bytes,omitempty"`
+	Result          string `json:"result,omitempty"`
+	Evidence        string `json:"evidence"`
+	Aggregated      int    `json:"aggregated,omitempty"`
 }
 
 // Sample의 Scope는 "host" 또는 서비스 키와 레플리카를 조합한 값이다.
@@ -167,6 +171,25 @@ type Gap struct {
 	Dropped int       `json:"dropped,omitempty"`
 }
 
+type Vantage string
+
+const (
+	VantageInternal Vantage = "internal"
+	VantageExternal Vantage = "external"
+)
+
+// Probe는 서비스 응답 확인 한 번의 결과다. 응답을 받지 못했으면 LatencyMS는 nil이다.
+type Probe struct {
+	At         time.Time `json:"at"`
+	ServiceKey string    `json:"service_key"`
+	Vantage    Vantage   `json:"vantage"`
+	Target     string    `json:"target"`
+	OK         bool      `json:"ok"`
+	Failure    string    `json:"failure,omitempty"`
+	LatencyMS  *int64    `json:"latency_ms,omitempty"`
+	TimeoutMS  int64     `json:"timeout_ms,omitempty"`
+}
+
 const HostScope = "host"
 
 const standaloneProject = "_standalone"
@@ -181,6 +204,11 @@ func ServiceKey(project, service string) string {
 
 func (c Container) ServiceKey() string {
 	return ServiceKey(c.Project, c.Service)
+}
+
+// ContainerScope는 재생성되어도 지표 계열이 이어지도록 컨테이너 ID 대신 레플리카를 쓴다.
+func ContainerScope(serviceKey string, replica int) string {
+	return serviceKey + "#" + strconv.Itoa(replica)
 }
 
 // Normalize는 순서를 고정하고 해시를 계산한다. 해시가 같으면 구성이 같다.
