@@ -3,7 +3,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import type { EventRow, GapRow, Meta, Server, Topology } from '../api'
 import { parseTarget, updateContext, type ConsoleContext } from '../context'
 import { formatClock, formatDuration, formatSize, isLateArrival } from '../format'
-import { CATEGORY_LABEL, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
+import { CATEGORY_LABEL, UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
 import { StatusIcon } from './Icons'
 import { LogsPanel } from './LogsPanel'
@@ -142,6 +142,7 @@ function targetLabel(target?: string): string | undefined {
   if (!parsed || parsed.kind === 'host') return undefined
   if (parsed.kind === 'service') return serviceLabel(parsed.key)
   if (parsed.kind === 'network') return `네트워크 ${parsed.name}`
+  if (parsed.kind === 'hostService') return parsed.name === UNKNOWN_HOST_SERVICE ? UNKNOWN_HOST_LABEL : parsed.name
   return `프로젝트 ${parsed.key === '_standalone' ? '미분류' : parsed.key}`
 }
 
@@ -154,9 +155,11 @@ interface Props {
   topology?: Topology
   selectedEvent?: EventRow
   now: number
+  collapsed: boolean
+  onToggleCollapsed: () => void
 }
 
-export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now }: Props) {
+export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed }: Props) {
   const selectedCategories = context.categories ? context.categories.split(',') : Object.keys(CATEGORY_LABEL)
   const toggleCategory = (category: string) => {
     const next = selectedCategories.includes(category)
@@ -179,12 +182,18 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
             ['metrics', '지표'],
             ['logs', '로그'],
           ].map(([id, text]) => (
-            <button key={id} type="button" role="tab" aria-selected={context.tab === id} className={context.tab === id ? 'active' : ''} onClick={() => updateContext({ tab: id })}>
+            <button key={id} type="button" role="tab" aria-selected={context.tab === id} className={context.tab === id ? 'active' : ''} onClick={() => {
+              updateContext({ tab: id })
+              if (collapsed) onToggleCollapsed()
+            }}>
               {text}
             </button>
           ))}
         </div>
-        {context.tab === 'flow' && (
+        <button type="button" className="tool-button panel-toggle" aria-expanded={!collapsed} onClick={onToggleCollapsed} title="맵을 넓게 보려면 접으세요">
+          {collapsed ? '▴ 펼치기' : '▾ 접기'}
+        </button>
+        {!collapsed && context.tab === 'flow' && (
           <>
             <span className="omitted">
               표시되지 않는 것: {notes.join(', ')}
@@ -210,11 +219,11 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
           </>
         )}
       </div>
-      {context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}
-      {context.tab === 'metrics' && server && (
+      {!collapsed && context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}
+      {!collapsed && context.tab === 'metrics' && server && (
         <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} />
       )}
-      {context.tab === 'logs' && server && (
+      {!collapsed && context.tab === 'logs' && server && (
         <LogsPanel server={server} topology={topology} context={context} selectedEvent={selectedEvent} />
       )}
     </section>

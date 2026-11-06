@@ -1,5 +1,6 @@
-import type { Network, Service, Topology } from './api'
+import type { HostService, Network, PortBinding, Project, Service, Topology } from './api'
 import { summarizePorts } from './format'
+import { hostServiceKey } from './status'
 
 // 구조도를 등각 격자 위에 배치한다. a는 오른쪽 아래, b는 오른쪽 위로 가는 축이다.
 export const CELL_X = 118
@@ -14,11 +15,14 @@ export const iso = (a: number, b: number): Point => ({ x: (a + b) * CELL_X, y: (
 
 const COLUMN_GAP = 1.5
 const ROW_GAP = 1.16
-const RAIL_START_B = -1
-const FIRST_RAIL_A = -0.7
+const RAIL_START_B = -1.5
+const FIRST_RAIL_A = -1
 const RAIL_GAP_A = 0.42
-const HOST_AT = { a: -1.05, b: -2.05 }
-const INTERNET_AT = { a: 0.75, b: -2.05 }
+const HOST_AT = { a: -1.75, b: -2.3 }
+const INTERNET_AT = { a: -0.2, b: -3 }
+const HOST_COLUMN_B = -1.5
+// 서비스가 이보다 많으면 문제없는 프로젝트를 한 장비로 접어 전체가 읽히게 한다.
+const AUTO_COLLAPSE_SERVICES = 12
 
 // 연결선이 지나가는 통로다. 장비 위로 지나가지 않도록 열 사이로 돌린다.
 const LOCAL_BUS = -0.34
@@ -35,9 +39,23 @@ const PLATE_SIDE = 0.6
 export interface SlotMemory {
   projects: string[]
   services: Record<string, string[]>
+  hosts?: string[]
 }
 
-export const emptySlots = (): SlotMemory => ({ projects: [], services: {} })
+export const emptySlots = (): SlotMemory => ({ projects: [], services: {}, hosts: [] })
+
+// collapsedProjects는 접힌 프로젝트를 정한다. 사용자가 직접 바꾼 것을 먼저 따르고,
+// 자동으로 접을 때도 장애나 주의가 있는 프로젝트는 펼쳐 둔다.
+export function collapsedProjects(topology: Topology, overrides: Readonly<Record<string, boolean>>): Set<string> {
+  const total = topology.projects.flatMap((project) => project.services).filter((service) => !isFinishedJob(service)).length
+  const crowded = total > AUTO_COLLAPSE_SERVICES
+  const collapsed = new Set<string>()
+  for (const project of topology.projects) {
+    const quiet = project.status === 'ok' || project.status === 'stopped'
+    if (overrides[project.key] ?? (crowded && quiet)) collapsed.add(project.key)
+  }
+  return collapsed
+}
 
 const STANDALONE = '_standalone'
 
@@ -57,6 +75,11 @@ export function assignSlots(previous: SlotMemory, topology: Topology): SlotMemor
   const next: SlotMemory = {
     projects: [...previous.projects],
     services: Object.fromEntries(Object.entries(previous.services).map(([key, list]) => [key, [...list]])),
+    hosts: [...(previous.hosts ?? [])],
+  }
+  for (const service of topology.host_services ?? []) {
+    const key = hostServiceKey(service)
+    if (!next.hosts!.includes(key)) next.hosts!.push(key)
   }
   const newProjects = topology.projects
     .map((project) => project.key)
@@ -72,7 +95,7 @@ export function assignSlots(previous: SlotMemory, topology: Topology): SlotMemor
   return next
 }
 
-export type DeviceKind = 'internet' | 'host' | 'switch' | 'service'
+export type DeviceKind = 'internet' | 'host' | 'switch' | 'service' | 'stack' | 'hostService'
 
 export interface SceneDevice {
   id: string
@@ -82,6 +105,8 @@ export interface SceneDevice {
   stage: number
   service?: Service
   network?: Network
+  project?: Project
+  hostService?: HostService
 }
 
 export interface ScenePlate {
@@ -89,6 +114,8 @@ export interface ScenePlate {
   projectKey: string
   corners: [Point, Point, Point, Point]
   hiddenJobs: number
+  // Docker 밖 서비스를 묶는 판이다. 프로젝트처럼 접지 않는다.
+  host?: boolean
 }
 
 export type LinkKind = 'external' | 'publish' | 'loopback' | 'member' | 'declared'
@@ -160,20 +187,54 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
     service.containers.flatMap((container) => (container.ports ?? []).filter((port) => port.host_port && !isLoopback(port.host_ip))),
   )
   const hasExternalProbe = allServices.some((service) => service.probes.some((probe) => probe.vantage === 'external'))
+  const hostServices = topology.host_services ?? []
+  const publicHostPorts: PortBinding[] = hostServices.flatMap((service) =>
+    service.listening
+      ? service.ports.filter((port) => !isLoopback(port.ip)).map((port) => ({ host_ip: port.ip, host_port: port.port, container_port: port.port, proto: 'tcp' }))
+      : [],
+  )
 
   place('host', 'host', HOST_AT, 1)
-  if (publicPorts.length > 0 || hasExternalProbe) {
+  if (publicPorts.length + publicHostPorts.length > 0 || hasExternalProbe) {
     place('internet', 'internet', INTERNET_AT, 0)
-    const ports = summarizePorts(publicPorts, 3)
+    const ports = summarizePorts([...publicPorts, ...publicHostPorts], 3)
     links.push({
       id: 'external',
       kind: 'external',
       from: 'internet',
       to: 'host',
-      d: pathOf([INTERNET_AT, HOST_AT]),
+      d: pathOf([INTERNET_AT, { a: INTERNET_AT.a, b: HOST_AT.b }, HOST_AT]),
       label: ports ? `포트 ${ports}` : undefined,
       labelAt: iso((INTERNET_AT.a + HOST_AT.a) / 2, HOST_AT.b),
       stage: 1,
+    })
+  }
+
+  // Docker 밖의 서비스는 서버 옆 열에 둔다. 컨테이너와 구분해 볼 수 있게 하기 위해서다.
+  const hostSlots = slots.hosts ?? []
+  const shownHosts = hostSlots.filter((key) => hostServices.some((service) => hostServiceKey(service) === key))
+  if (shownHosts.length > 0) {
+    const lastRow = rowA(hostSlots.length - 1)
+    plates.push({
+      id: 'hostplate',
+      projectKey: '',
+      host: true,
+      hiddenJobs: 0,
+      corners: [
+        iso(-PLATE_HEAD, HOST_COLUMN_B - PLATE_SIDE),
+        iso(-PLATE_HEAD, HOST_COLUMN_B + PLATE_SIDE),
+        iso(lastRow + PLATE_TAIL, HOST_COLUMN_B + PLATE_SIDE),
+        iso(lastRow + PLATE_TAIL, HOST_COLUMN_B - PLATE_SIDE),
+      ],
+    })
+    hostSlots.forEach((key, row) => {
+      const hostService = hostServices.find((service) => hostServiceKey(service) === key)
+      if (!hostService) return
+      const id = `hostsvc:${key}`
+      const at = { a: rowA(row), b: HOST_COLUMN_B }
+      place(id, 'hostService', at, 3, { hostService })
+      const open = hostService.listening && hostService.ports.some((port) => !isLoopback(port.ip))
+      links.push({ id: `hostlink:${key}`, kind: open ? 'publish' : 'loopback', from: 'host', to: id, d: laneRoute(HOST_AT, at, LOCAL_BUS), stage: 3 })
     })
   }
 
@@ -184,7 +245,7 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
     const b = column * COLUMN_GAP
     const isCollapsed = collapsed.has(projectKey)
     const slotted = slots.services[projectKey] ?? []
-    const rows = isCollapsed ? 0 : slotted.length
+    const rows = isCollapsed ? 1 : slotted.length
     const lastA = rows > 0 ? rowA(rows - 1) : 0
     const project = topology.projects.find((item) => item.key === projectKey)!
     plates.push({
@@ -198,7 +259,10 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
       ],
       hiddenJobs: project.services.filter(isFinishedJob).length,
     })
-    if (isCollapsed) return
+    if (isCollapsed) {
+      place(`stack:${projectKey}`, 'stack', { a: rowA(0), b }, 3, { project })
+      return
+    }
     slotted.forEach((serviceKey, row) => {
       const service = services.get(serviceKey)
       if (service && !isFinishedJob(service)) place(`svc:${serviceKey}`, 'service', { a: rowA(row), b }, 3, { service })
@@ -224,20 +288,28 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
   }
 
   const visible = (id: string) => positions[id] !== undefined
+  // 접힌 프로젝트의 서비스는 프로젝트 장비로 연결한다.
+  const deviceOf = (serviceKey: string): string | undefined => {
+    if (visible(`svc:${serviceKey}`)) return `svc:${serviceKey}`
+    const stack = `stack:${serviceKey.split('/')[0]}`
+    return visible(stack) ? stack : undefined
+  }
 
   for (const network of topology.networks) {
     const switchID = `net:${network.name}`
     if (!visible(switchID)) continue
     const from = positions[switchID]
+    const linked = new Set<string>()
     for (const member of network.members) {
-      const to = positions[`svc:${member}`]
-      if (!to) continue
+      const device = deviceOf(member)
+      if (!device || linked.has(device)) continue
+      linked.add(device)
       links.push({
-        id: `member:${network.name}:${member}`,
+        id: `member:${network.name}:${device}`,
         kind: 'member',
         from: switchID,
-        to: `svc:${member}`,
-        d: laneRoute(from, to, network.shared ? SHARED_LANE : LOCAL_BUS),
+        to: device,
+        d: laneRoute(from, positions[device], network.shared ? SHARED_LANE : LOCAL_BUS),
         stage: 3,
       })
     }
@@ -246,18 +318,21 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
     }
   }
 
+  const portLinks = new Set<string>()
   for (const service of allServices) {
-    const id = `svc:${service.key}`
+    const id = deviceOf(service.key)
+    if (!id) continue
     const to = positions[id]
-    if (!to) continue
     const published = service.containers.flatMap((container) => (container.ports ?? []).filter((port) => port.host_port))
     const reachable = published.filter((port) => !isLoopback(port.host_ip))
     const loopback = published.filter((port) => isLoopback(port.host_ip))
-    if (reachable.length > 0) {
-      links.push({ id: `publish:${service.key}`, kind: 'publish', from: 'host', to: id, d: laneRoute(HOST_AT, to, PUBLISH_LANE), stage: 3 })
+    if (reachable.length > 0 && !portLinks.has(`publish:${id}`)) {
+      portLinks.add(`publish:${id}`)
+      links.push({ id: `publish:${id}`, kind: 'publish', from: 'host', to: id, d: laneRoute(HOST_AT, to, PUBLISH_LANE), stage: 3 })
     }
-    if (loopback.length > 0) {
-      links.push({ id: `loopback:${service.key}`, kind: 'loopback', from: 'host', to: id, d: laneRoute(HOST_AT, to, PUBLISH_LANE), stage: 3 })
+    if (loopback.length > 0 && !portLinks.has(`loopback:${id}`)) {
+      portLinks.add(`loopback:${id}`)
+      links.push({ id: `loopback:${id}`, kind: 'loopback', from: 'host', to: id, d: laneRoute(HOST_AT, to, PUBLISH_LANE), stage: 3 })
     }
   }
 
@@ -279,10 +354,19 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
   return { devices, plates, links, positions }
 }
 
+// visibleDevice는 대상이 접혀 있으면 그 프로젝트 장비를 돌려준다.
+export function visibleDevice(scene: Scene, id: string): string | undefined {
+  if (scene.positions[id]) return id
+  if (!id.startsWith('svc:')) return undefined
+  const stack = `stack:${id.slice(4).split('/')[0]}`
+  return scene.positions[stack] ? stack : undefined
+}
+
 // routeBetween은 실제로 일어난 연결을 그릴 경로를 만든다.
 export function routeBetween(scene: Scene, from: string, to: string): string | undefined {
   const start = scene.positions[from]
-  const end = scene.positions[to]
+  const device = visibleDevice(scene, to)
+  const end = device ? scene.positions[device] : undefined
   if (!start || !end) return undefined
   return laneRoute(start, end, PUBLISH_LANE)
 }
@@ -291,11 +375,18 @@ export type ServiceRole = 'database' | 'cache' | 'proxy' | 'storage' | 'web' | '
 
 // serviceRole은 아이콘 모양을 고르기 위한 추정이다. 이미지와 서비스 이름만 보며 다른 판단에는 쓰지 않는다.
 export function serviceRole(service: Service): ServiceRole {
-  const image = service.containers[0]?.image.toLowerCase() ?? ''
+  return roleFromText(service.containers[0]?.image.toLowerCase() ?? '', service.name)
+}
+
+export function hostServiceRole(service: HostService): ServiceRole {
+  return roleFromText(service.name.toLowerCase(), service.name)
+}
+
+function roleFromText(image: string, name: string): ServiceRole {
   if (/postgres|mysql|mariadb|mongo|cockroach|timescale|clickhouse/.test(image)) return 'database'
   if (/redis|valkey|memcached|keydb/.test(image)) return 'cache'
-  if (/nginx|caddy|traefik|haproxy|envoy/.test(image)) return 'proxy'
+  if (/nginx|caddy|traefik|haproxy|envoy|apache|httpd/.test(image)) return 'proxy'
   if (/minio|seaweed|garage|ceph/.test(image)) return 'storage'
-  if (/\b(web|front|ui|site)\b/.test(`${service.name} ${image}`.replace(/[-_/:]/g, ' '))) return 'web'
+  if (/\b(web|front|ui|site)\b/.test(`${name} ${image}`.replace(/[-_/:]/g, ' '))) return 'web'
   return 'app'
 }

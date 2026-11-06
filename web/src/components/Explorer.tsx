@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import type { Server, Topology } from '../api'
 import { updateContext } from '../context'
-import { STATUS_LABEL, projectLabel } from '../status'
+import { HOST_EVIDENCE_TAG, STATUS_LABEL, hostServiceKey, hostServiceName, projectLabel } from '../status'
 import { IsoNetwork, StatusIcon } from './Icons'
 
 interface Props {
@@ -62,6 +62,21 @@ export function Explorer({ server, topology, target }: Props) {
             </div>
           )
         })}
+        {(topology?.host_services ?? []).length > 0 && !needle && (
+          <div className="tree-group">
+            <div className="tree-heading">호스트 서비스 (Docker 밖)</div>
+            {topology!.host_services!.map((service) => {
+              const id = `hostsvc:${hostServiceKey(service)}`
+              return (
+                <button key={id} type="button" className={`tree-item service ${target === id ? 'selected' : ''}`} onClick={() => select(id)}>
+                  <StatusIcon status={service.listening ? 'ok' : 'critical'} size={12} />
+                  <span className="grow ellipsis">{hostServiceName(service)}</span>
+                  <span className="muted tree-status">{HOST_EVIDENCE_TAG[service.evidence]}</span>
+                </button>
+              )
+            })}
+          </div>
+        )}
         {topology && topology.networks.length > 0 && !needle && (
           <div className="tree-group">
             <div className="tree-heading">네트워크</div>

@@ -121,6 +121,18 @@ export function ServiceIcon({ role }: { role: ServiceRole }) {
   )
 }
 
+export function StackIcon() {
+  return (
+    <svg className="iso-device" viewBox="0 0 96 96" width="98" height="98" aria-hidden="true">
+      <Shadow cx={50} y={68} size={40} />
+      <Box cx={30} floorY={52} halfWidth={18} height={20} />
+      <Box cx={66} floorY={52} halfWidth={18} height={20} />
+      <Box cx={48} floorY={68} halfWidth={18} height={20} />
+      <path className="iso-line" d="M37 58l9 5M37 63l9 5" />
+    </svg>
+  )
+}
+
 export function HostIcon() {
   return (
     <svg className="iso-device" viewBox="0 0 120 130" width="112" height="122" aria-hidden="true">

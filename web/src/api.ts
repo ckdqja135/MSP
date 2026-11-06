@@ -81,6 +81,18 @@ export interface Relation {
   detail?: string
 }
 
+export interface HostServicePort {
+  ip: string
+  port: number
+}
+
+export interface HostService {
+  name: string
+  ports: HostServicePort[]
+  evidence: 'socket-owner' | 'config' | 'name-match' | 'unknown'
+  listening: boolean
+}
+
 export interface Topology {
   server_id: string
   version_id: number
@@ -91,6 +103,7 @@ export interface Topology {
   projects: Project[]
   networks: Network[]
   relations: Relation[]
+  host_services?: HostService[]
 }
 
 export interface Collector {

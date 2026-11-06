@@ -24,6 +24,7 @@ export function TopBar({ meta, servers, server, topology, context, now, streamCo
       if (service.status === 'warning') counts.warning++
     }
   }
+  counts.critical += (topology?.host_services ?? []).filter((service) => !service.listening).length
   const mode = timeMode(context)
   const reachable = server?.reachability.state ?? 'unknown'
 

@@ -1,4 +1,4 @@
-import type { Service, Status } from './api'
+import type { HostService, Service, Status } from './api'
 
 export const STATUS_LABEL: Record<Status, string> = {
   ok: '정상',
@@ -46,7 +46,33 @@ export function projectLabel(key: string): string {
 
 export function serviceLabel(key: string): string {
   const [project, name] = key.split('/')
-  return project === '_standalone' ? name : key
+  return project === '_standalone' || project === '_host' ? name : key
+}
+
+// 소켓 주인도 이름도 모르는 호스트 포트를 묶는 이름이다.
+export const UNKNOWN_HOST_SERVICE = '_unknown'
+export const UNKNOWN_HOST_LABEL = '프로세스 미확인'
+
+export function hostServiceKey(service: HostService): string {
+  return service.name || UNKNOWN_HOST_SERVICE
+}
+
+export function hostServiceName(service: HostService): string {
+  return service.name || UNKNOWN_HOST_LABEL
+}
+
+export const HOST_EVIDENCE_TAG: Record<HostService['evidence'], string> = {
+  'socket-owner': '확인',
+  config: '설정',
+  'name-match': '추정',
+  unknown: '미확인',
+}
+
+export const HOST_EVIDENCE_TEXT: Record<HostService['evidence'], string> = {
+  'socket-owner': '에이전트가 이 포트의 소켓 주인을 직접 읽었습니다.',
+  config: '에이전트 설정의 host_services에 적힌 이름입니다.',
+  'name-match': '같은 이름의 프로세스가 실행 중이고 잘 알려진 포트가 열려 있어 추정한 이름입니다. 소켓 주인을 확인한 것은 아닙니다.',
+  unknown: '에이전트 권한으로는 이 포트의 주인을 읽을 수 없습니다.',
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -71,6 +97,8 @@ const TYPE_LABEL: Record<string, string> = {
   'resource.cpu': 'CPU 경고',
   'resource.memory': '메모리 경고',
   'resource.disk': '디스크 경고',
+  'host.port_open': '호스트 포트 열림',
+  'host.port_closed': '호스트 포트 닫힘',
   'alert.fired': '알림 발생',
   'alert.resolved': '알림 복구',
   'alert.flapping': '반복 발생',
@@ -98,6 +126,7 @@ const EVIDENCE_LABEL: Record<string, string> = {
   threshold: '임계값 판정',
   'agent-receive': '수신 기록',
   'alert-rule': '알림 규칙',
+  'proc-net': '포트 목록',
 }
 
 export function evidenceLabel(evidence: string): string {

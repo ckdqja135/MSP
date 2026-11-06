@@ -108,6 +108,7 @@ export type Target =
   | { kind: 'service'; key: string }
   | { kind: 'network'; name: string }
   | { kind: 'project'; key: string }
+  | { kind: 'hostService'; name: string }
 
 export function parseTarget(value?: string): Target | undefined {
   if (!value) return undefined
@@ -116,5 +117,6 @@ export function parseTarget(value?: string): Target | undefined {
   if (kind === 'svc') return { kind: 'service', key: rest }
   if (kind === 'net') return { kind: 'network', name: rest }
   if (kind === 'project') return { kind: 'project', key: rest }
+  if (kind === 'hostsvc') return { kind: 'hostService', name: rest }
   return undefined
 }

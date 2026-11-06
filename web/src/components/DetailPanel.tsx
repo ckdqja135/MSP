@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import type { Container, EventRow, Meta, Network, Project, Server, Service, Topology } from '../api'
+import type { Container, EventRow, HostService, Meta, Network, Project, Server, Service, Topology } from '../api'
 import { parseTarget, updateContext } from '../context'
 import { formatAge, formatBytes, formatClock, formatDateTime, formatDuration, formatPercent, formatPortGroup, formatRate, formatSize, formatUptime, groupPorts, isLateArrival, readMetric, shortID } from '../format'
-import { STATUS_LABEL, evidenceLabel, projectLabel, serviceHeadline, sourceLabel, typeLabel } from '../status'
+import { HOST_EVIDENCE_TAG, HOST_EVIDENCE_TEXT, STATUS_LABEL, evidenceLabel, hostServiceKey, hostServiceName, projectLabel, serviceHeadline, sourceLabel, typeLabel } from '../status'
 import { StatusIcon, UnsupportedIcon } from './Icons'
 
 interface Props {
@@ -107,6 +107,7 @@ const COLLECTOR_LABEL: Record<string, string> = {
   docker: 'Docker',
   container_stats: '컨테이너 자원',
   boot: '가동 시간',
+  host_services: '호스트 포트',
 }
 
 function collectorText(state: string): string {
@@ -297,6 +298,42 @@ function NetworkDetail({ network }: { network: Network }) {
   )
 }
 
+function HostServiceDetail({ service }: { service: HostService }) {
+  const status: 'ok' | 'critical' = service.listening ? 'ok' : 'critical'
+  return (
+    <>
+      <header className="detail-head">
+        <h2 className="mono">{hostServiceName(service)}</h2>
+        <span className={`badge ${status}`}>
+          <StatusIcon status={status} size={12} />
+          {service.listening ? '포트 열림' : '포트 닫힘'}
+        </span>
+        <p className="muted">Docker 밖에서 실행되는 서비스</p>
+      </header>
+      <section className="detail-section">
+        <Row label="이름 근거">{HOST_EVIDENCE_TAG[service.evidence]}</Row>
+        <p className="muted small">{HOST_EVIDENCE_TEXT[service.evidence]}</p>
+        {service.evidence === 'name-match' || service.evidence === 'unknown' ? (
+          <p className="muted small">이름을 확정하려면 에이전트 설정의 host_services에 적으세요. 포트가 닫히면 알림도 받을 수 있습니다.</p>
+        ) : null}
+      </section>
+      <section className="detail-section">
+        <h3>포트</h3>
+        <span className="mono port-list">
+          {service.ports.map((port) => (
+            <span key={`${port.ip}:${port.port}`}>{port.ip ? `${port.ip}:` : ''}{port.port}</span>
+          ))}
+        </span>
+        <p className="muted small">포트가 열려 있다는 뜻입니다. 외부에서 닿는지와 앱이 응답하는지는 응답 확인으로 알 수 있습니다.</p>
+      </section>
+      <section className="detail-section">
+        <h3>자원</h3>
+        <p className="muted small">호스트 프로세스별 자원은 수집하지 않습니다.</p>
+      </section>
+    </>
+  )
+}
+
 function ProjectDetail({ project }: { project: Project }) {
   return (
     <>
@@ -329,6 +366,9 @@ export function DetailPanel({ meta, server, topology, target, now, selectedEvent
   } else if (parsed?.kind === 'network' && topology) {
     const network = topology.networks.find((item) => item.name === parsed.name)
     content = network ? <NetworkDetail network={network} /> : <p className="muted empty">이 시점의 구성에 없는 네트워크입니다.</p>
+  } else if (parsed?.kind === 'hostService' && topology) {
+    const service = topology.host_services?.find((item) => hostServiceKey(item) === parsed.name)
+    content = service ? <HostServiceDetail service={service} /> : <p className="muted empty">이 시점의 구성에 없는 서비스입니다.</p>
   } else if (parsed?.kind === 'project' && topology) {
     const project = topology.projects.find((item) => item.key === parsed.key)
     content = project ? <ProjectDetail project={project} /> : <p className="muted empty">이 시점의 구성에 없는 프로젝트입니다.</p>

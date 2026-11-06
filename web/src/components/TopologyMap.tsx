@@ -6,6 +6,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useStore,
   useViewport,
   type Edge,
   type EdgeProps,
@@ -14,25 +15,28 @@ import {
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { diffActivities, eventActivity, mergeCallouts, type Activity } from '../activity'
-import type { EventRow, Network, Project, Server, Service, Topology } from '../api'
+import type { EventRow, HostService, Network, Project, Server, Service, Topology } from '../api'
 import { updateContext } from '../context'
 import { compactPorts, formatBytes, formatPercent, formatUptime, readMetric } from '../format'
 import {
   CELL_X,
   CELL_Y,
   assignSlots,
+  collapsedProjects,
   computeScene,
   emptySlots,
+  hostServiceRole,
   routeBetween,
   serviceRole,
+  visibleDevice,
   type Point,
   type SceneDevice,
   type ScenePlate,
   type SlotMemory,
 } from '../scene'
-import { STATUS_LABEL, projectLabel, serviceHeadline } from '../status'
+import { HOST_EVIDENCE_TAG, STATUS_LABEL, hostServiceName, projectLabel, serviceHeadline } from '../status'
 import { StatusIcon, UnsupportedIcon } from './Icons'
-import { CloudIcon, HostIcon, ServiceIcon, SwitchIcon } from './IsoIcons'
+import { CloudIcon, HostIcon, ServiceIcon, StackIcon, SwitchIcon } from './IsoIcons'
 
 export interface MapHighlight {
   nodes: ReadonlySet<string>
@@ -52,6 +56,8 @@ const DEVICE_BOX = {
   switch: { width: 260, height: 66, anchorX: 39, anchorY: 42 },
   host: { width: 250, height: 196, anchorX: 58, anchorY: 164 },
   internet: { width: 260, height: 92, anchorX: 62, anchorY: 50 },
+  stack: { width: 300, height: 100, anchorX: 46, anchorY: 70 },
+  hostService: { width: 280, height: 100, anchorX: 42, anchorY: 66 },
 } as const
 
 const CALLOUT = { width: 236, height: 86, offsetX: 34, offsetY: 138 }
@@ -159,6 +165,85 @@ const ServiceNode = memo(function ServiceNode({ data }: NodeProps<Node<ServiceDa
   )
 })
 
+type HostServiceData = DeviceFlags & { hostService: HostService }
+
+// 호스트 서비스는 이름의 근거를 함께 표시한다. 추정을 확인된 사실처럼 보이지 않게 하기 위해서다.
+const HostServiceNode = memo(function HostServiceNode({ data }: NodeProps<Node<HostServiceData, 'hostService'>>) {
+  const { hostService } = data
+  const ports = [...new Set(hostService.ports.map((port) => port.port))].sort((a, b) => a - b)
+  const status = hostService.listening ? 'ok' : 'critical'
+  const shown = ports.length > 3 ? `${ports.slice(0, 3).join(', ')} 외 ${ports.length - 3}개` : ports.join(', ')
+  return (
+    <div
+      className={deviceClasses('device host-service-card', data, status)}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <ServiceIcon role={hostServiceRole(hostService)} />
+      <div className="device-label">
+        <div className="device-name">
+          <strong>{hostServiceName(hostService)}</strong>
+          <span className={`evidence-tag ${hostService.evidence}`}>{HOST_EVIDENCE_TAG[hostService.evidence]}</span>
+        </div>
+        <div className="device-address">포트 {shown}</div>
+        <div className={hostService.listening ? 'device-metrics' : 'device-state'}>{hostService.listening ? '열림' : '포트 닫힘'}</div>
+      </div>
+    </div>
+  )
+})
+
+type StackData = DeviceFlags & { project: Project; now: number }
+
+// 접힌 프로젝트는 장비 하나로 그리고 상태 집계와 자원 합계를 보여준다.
+const StackNode = memo(function StackNode({ data }: NodeProps<Node<StackData, 'stack'>>) {
+  const { project, now } = data
+  const counts = { ok: 0, warning: 0, critical: 0, stopped: 0, disconnected: 0 }
+  let cpu = 0
+  let mem = 0
+  let measured = false
+  for (const service of project.services) {
+    counts[service.status]++
+    const totals = serviceTotals(service)
+    if (totals.cpu && readMetric(totals.cpu, now, formatPercent).state === 'fresh') {
+      cpu += totals.cpu.value
+      measured = true
+    }
+    if (totals.mem && readMetric(totals.mem, now, formatBytes).state === 'fresh') mem += totals.mem.value
+  }
+  const parts = [
+    counts.critical > 0 && `장애 ${counts.critical}`,
+    counts.warning > 0 && `주의 ${counts.warning}`,
+    counts.ok > 0 && `정상 ${counts.ok}`,
+    counts.stopped > 0 && `중지 ${counts.stopped}`,
+    counts.disconnected > 0 && `끊김 ${counts.disconnected}`,
+  ].filter(Boolean)
+  return (
+    <div
+      className={deviceClasses('device stack-card', data, project.status)}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <StackIcon />
+      <div className="device-label">
+        <div className="device-name">
+          <strong>{projectLabel(project.key)}</strong>
+          <span className={`badge ${project.status}`}>
+            <StatusIcon status={project.status} size={11} />
+            {STATUS_LABEL[project.status]}
+          </span>
+        </div>
+        <div className="device-address">서비스 {project.services.length}개 · {parts.join(' · ')}</div>
+        {measured ? (
+          <div className="device-metrics">CPU {formatPercent(cpu)} · {formatBytes(mem)}</div>
+        ) : (
+          <div className="device-metrics">지표 없음</div>
+        )}
+        <div className="stack-hint">눌러서 펼치기</div>
+      </div>
+    </div>
+  )
+})
+
 type HostData = DeviceFlags & { server: Server; now: number }
 
 const HostNode = memo(function HostNode({ data }: NodeProps<Node<HostData, 'host'>>) {
@@ -234,7 +319,7 @@ const InternetNode = memo(function InternetNode({ data }: NodeProps<Node<Interne
   )
 })
 
-type PlateData = { plate: ScenePlate; project: Project; selected: boolean; collapsed: boolean; onToggle: () => void; origin: Point }
+type PlateData = { plate: ScenePlate; project?: Project; selected: boolean; collapsed: boolean; onToggle: () => void; origin: Point }
 
 // 프로젝트 판은 시각적 묶음이다. 머리글만 클릭을 받고 나머지는 뒤의 장비와 화면 이동을 막지 않는다.
 const PlateNode = memo(function PlateNode({ data }: NodeProps<Node<PlateData, 'plate'>>) {
@@ -242,6 +327,20 @@ const PlateNode = memo(function PlateNode({ data }: NodeProps<Node<PlateData, 'p
   const points = plate.corners.map((corner) => `${corner.x - origin.x},${corner.y - origin.y}`).join(' ')
   // 머리글은 판의 위 꼭짓점 위에 둔다. 옆 프로젝트의 라벨과 겹치지 않는 자리다.
   const apex = plate.corners[1]
+  if (plate.host || !project) {
+    // 호스트 판 위쪽은 스위치와 연결선이 지나가므로 아래 꼭짓점 밑에 적는다.
+    const bottom = plate.corners[3]
+    return (
+      <div className="project-plate host-plate">
+        <svg className="plate-shape" aria-hidden="true">
+          <polygon points={points} />
+        </svg>
+        <div className="plate-head plate-head-below" style={{ left: bottom.x - origin.x, top: bottom.y - origin.y + 6 }}>
+          <strong>이 서버, Docker 밖</strong>
+        </div>
+      </div>
+    )
+  }
   return (
     <div className={`project-plate ${selected ? 'selected' : ''}`}>
       <svg className="plate-shape" aria-hidden="true">
@@ -290,6 +389,8 @@ const CalloutNode = memo(function CalloutNode({ data }: NodeProps<Node<CalloutDa
 
 const nodeTypes = {
   service: ServiceNode,
+  hostService: HostServiceNode,
+  stack: StackNode,
   host: HostNode,
   switch: SwitchNode,
   internet: InternetNode,
@@ -372,14 +473,19 @@ interface MapProps {
   live: boolean
   selectedEvent?: EventRow
   focus: boolean
+  // 패널을 열고 닫으면 맵 크기가 바뀌므로 다시 맞춘다. 장비의 위치는 바뀌지 않는다.
+  layoutKey: string
 }
 
-function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus }: MapProps) {
+// 이 배율보다 작으면 이름과 상태만 크게 보여준다. 작은 글자는 어차피 읽히지 않는다.
+const FAR_ZOOM = 0.62
+
+function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus, layoutKey }: MapProps) {
   const { fitView } = useReactFlow()
   const slotKey = `msp.slots.${server.mode}.${server.id}`
-  const collapseKey = `msp.collapsed.${server.mode}.${server.id}`
+  const collapseKey = `msp.collapse-overrides.${server.mode}.${server.id}`
   const [slots, setSlots] = useState<SlotMemory>(() => loadJSON(slotKey, emptySlots()))
-  const [collapsed, setCollapsed] = useState<string[]>(() => loadJSON(collapseKey, []))
+  const [collapseOverrides, setCollapseOverrides] = useState<Record<string, boolean>>(() => loadJSON(collapseKey, {}))
   const [layers, setLayers] = useState<Layers>({ ports: true, networks: true, declared: false, activity: true })
 
   const currentSlots = useMemo(() => assignSlots(slots, topology), [slots, topology])
@@ -390,14 +496,15 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     }
   }, [currentSlots, slots, slotKey])
 
-  const collapsedSet = useMemo(() => new Set(collapsed), [collapsed])
+  const collapsedSet = useMemo(() => collapsedProjects(topology, collapseOverrides), [topology, collapseOverrides])
   const scene = useMemo(() => computeScene(topology, currentSlots, collapsedSet), [topology, currentSlots, collapsedSet])
 
-  const toggleCollapsed = (key: string) => {
-    const next = collapsedSet.has(key) ? collapsed.filter((item) => item !== key) : [...collapsed, key]
-    setCollapsed(next)
+  const setProjectCollapsed = (key: string, value: boolean) => {
+    const next = { ...collapseOverrides, [key]: value }
+    setCollapseOverrides(next)
     window.localStorage.setItem(collapseKey, JSON.stringify(next))
   }
+  const toggleCollapsed = (key: string) => setProjectCollapsed(key, !collapsedSet.has(key))
 
   const userMoved = useRef(false)
   const fitAll = () => fitView({ padding: FIT_PADDING, duration: 450 })
@@ -410,13 +517,29 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     window.setTimeout(fitAll, 60)
   }
 
+  const zoom = useStore((state) => state.transform[2])
+
   // 알림에서 들어오면 대상 장비로 화면을 옮긴다.
   useEffect(() => {
     if (!focus || !target) return
     userMoved.current = true
-    const timer = window.setTimeout(() => fitView({ nodes: [{ id: target }], maxZoom: 1.1, padding: 1.1, duration: 450 }), 300)
+    const device = visibleDevice(scene, target) ?? target
+    const timer = window.setTimeout(() => fitView({ nodes: [{ id: device }], maxZoom: 1.1, padding: 1.1, duration: 450 }), 300)
     return () => window.clearTimeout(timer)
+    // 대상이 바뀔 때만 옮긴다. 데이터 갱신으로 화면이 움직이면 안 된다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focus, target, fitView])
+
+  const layoutState = useRef(layoutKey)
+  useEffect(() => {
+    if (layoutState.current === layoutKey) return
+    layoutState.current = layoutKey
+    if (userMoved.current) return
+    const timer = window.setTimeout(fitAll, 80)
+    return () => window.clearTimeout(timer)
+    // 패널 상태가 바뀔 때만 실행한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [layoutKey])
 
   // 새로 나타난 장비와 선을 찾아 한 번만 그리는 효과를 준다. 사용자가 화면을 옮기지 않았다면 전체가 보이게 맞춘다.
   const seen = useRef<Set<string> | null>(null)
@@ -482,7 +605,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     const flags = (device: SceneDevice): DeviceFlags => {
       const highlighted = highlightedNodes.has(device.id)
       return {
-        selected: target === device.id,
+        selected: target === device.id || (device.kind === 'stack' && target === `project:${device.project?.key}`),
         highlighted,
         dimmed: hasFocus && device.kind === 'service' && !highlighted && target !== device.id,
         entering: entering.has(device.id),
@@ -492,7 +615,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
 
     for (const plate of scene.plates) {
       const project = topology.projects.find((item) => item.key === plate.projectKey)
-      if (!project) continue
+      if (!project && !plate.host) continue
       const xs = plate.corners.map((corner) => corner.x)
       const ys = plate.corners.map((corner) => corner.y)
       const origin = { x: Math.min(...xs), y: Math.min(...ys) }
@@ -523,6 +646,8 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       if (device.kind === 'service') Object.assign(data, { service: device.service, now })
       if (device.kind === 'host') Object.assign(data, { server, now })
       if (device.kind === 'switch') Object.assign(data, { network: device.network })
+      if (device.kind === 'hostService') Object.assign(data, { hostService: device.hostService })
+      if (device.kind === 'stack') Object.assign(data, { project: device.project, now })
       result.push({
         id: device.id,
         type: device.kind,
@@ -537,7 +662,8 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     }
 
     for (const activity of mergeCallouts(shown).slice(0, MAX_CALLOUTS)) {
-      const device = scene.devices.find((item) => item.id === activity.to)
+      const deviceID = visibleDevice(scene, activity.to)
+      const device = scene.devices.find((item) => item.id === deviceID)
       if (!device) continue
       result.push({
         id: `callout:${activity.id}`,
@@ -599,7 +725,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
         id: `activity:${activity.id}`,
         type: 'iso',
         source: activity.from,
-        target: activity.to,
+        target: visibleDevice(scene, activity.to) ?? activity.to,
         className: `edge-activity ${activity.tone}`,
         selectable: false,
         focusable: false,
@@ -626,8 +752,18 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       onMoveStart={(event) => {
         if (event) userMoved.current = true
       }}
+      className={zoom < FAR_ZOOM ? 'lod-far' : ''}
       onNodeClick={(_, node) => {
-        if (node.type !== 'internet' && node.type !== 'callout') updateContext({ target: node.id, event: undefined })
+        if (node.type === 'internet' || node.type === 'callout') return
+        if (node.id === 'hostplate') {
+          updateContext({ target: 'host', event: undefined })
+        } else if (node.id.startsWith('stack:')) {
+          const key = node.id.slice('stack:'.length)
+          setProjectCollapsed(key, false)
+          updateContext({ target: `project:${key}`, event: undefined })
+        } else {
+          updateContext({ target: node.id, event: undefined })
+        }
       }}
       onPaneClick={() => updateContext({ target: undefined, event: undefined })}
     >

@@ -2,6 +2,7 @@ import { useMemo } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { fetchEvents, fetchGaps, type EventRow, type GapRow, type Topology } from './api'
 import { parseTarget, timeMode, timeWindow, type ConsoleContext } from './context'
+import { UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE } from './status'
 
 const PAGE_SIZE = 200
 
@@ -10,6 +11,7 @@ export function targetServices(target: string | undefined, topology: Topology | 
   const parsed = parseTarget(target)
   if (!parsed || parsed.kind === 'host' || !topology) return undefined
   if (parsed.kind === 'service') return [parsed.key]
+  if (parsed.kind === 'hostService') return [`_host/${parsed.name === UNKNOWN_HOST_SERVICE ? UNKNOWN_HOST_LABEL : parsed.name}`]
   if (parsed.kind === 'network') return topology.networks.find((network) => network.name === parsed.name)?.members ?? []
   return topology.projects.find((project) => project.key === parsed.key)?.services.map((service) => service.key) ?? []
 }
