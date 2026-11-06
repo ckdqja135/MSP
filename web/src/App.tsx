@@ -134,7 +134,7 @@ export function App() {
           )}
         </section>
         <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />
-        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} />
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} />
       </main>
     </div>
   )

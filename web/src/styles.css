@@ -708,6 +708,7 @@ p {
 
 .detail-links {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
 }
@@ -952,6 +953,103 @@ p {
 
 .nearby-row:hover {
   text-decoration: underline;
+}
+
+/* 지표 */
+.metrics {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+}
+
+.charts {
+  overflow-y: auto;
+  padding: 6px 10px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 8px 14px;
+  align-content: start;
+}
+
+.chart-title {
+  display: flex;
+  gap: 8px;
+  font-size: 11.5px;
+  font-weight: 600;
+  align-items: baseline;
+}
+
+.chart-legend {
+  font-weight: 400;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.chart-box {
+  height: 96px;
+  border: 1px solid var(--line-faint);
+  position: relative;
+}
+
+.chart-empty {
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px dashed var(--line-soft);
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.chart-empty.failed {
+  color: var(--warning);
+  border-color: var(--warning);
+}
+
+.usage {
+  border-left: 1px solid var(--line-soft);
+  overflow-y: auto;
+  padding: 6px 10px;
+  font-size: 12px;
+}
+
+.usage h3 {
+  font-size: 12px;
+  color: var(--ink-soft);
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.usage-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 58px 66px;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 2px 0;
+  text-align: left;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.usage-row:hover {
+  background: var(--line-faint);
+}
+
+.usage-row .num {
+  text-align: right;
+}
+
+.collect-failed {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.u-legend {
+  display: none;
 }
 
 @media (prefers-reduced-motion: reduce) {

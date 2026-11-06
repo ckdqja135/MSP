@@ -56,13 +56,44 @@ func TestTemperatureIsUnsupportedNotZero(t *testing.T) {
 		}
 	}
 	found := false
-	for _, status := range collectorStatus(now) {
+	for _, status := range s.collectorStatus(now) {
 		if status.Name == "temperature" {
 			found = status.State == protocol.CollectorUnsupported
 		}
 	}
 	if !found {
 		t.Error("온도 수집기가 미지원으로 표시되지 않았다")
+	}
+}
+
+func TestCollectFailureLeavesNoValue(t *testing.T) {
+	s := New(now)
+	at := s.origin.Add(diskIOFailFrom + time.Second)
+	for _, sample := range s.samplesAt(at) {
+		if sample.Name == "host.disk.read_bps" {
+			t.Fatal("수집 실패 구간에 값을 만들었다")
+		}
+	}
+	for _, status := range s.collectorStatus(at) {
+		if status.Name == "disk_io" && status.State != protocol.CollectorError {
+			t.Errorf("disk_io = %s", status.State)
+		}
+	}
+}
+
+func TestIdleNetworkIsARealZero(t *testing.T) {
+	s := New(now)
+	found := false
+	for _, sample := range s.samplesAt(now) {
+		if sample.Scope == protocol.ContainerScope("shop/cache", 1) && sample.Name == "container.net.rx_bps" {
+			found = true
+			if sample.Value != 0 {
+				t.Errorf("value = %f", sample.Value)
+			}
+		}
+	}
+	if !found {
+		t.Error("측정된 0이 빠졌다")
 	}
 }
 

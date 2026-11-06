@@ -183,10 +183,13 @@ const NetworkNode = memo(function NetworkNode({ data }: NodeProps<Node<NetworkDa
 
 const nodeTypes = { service: ServiceNode, host: HostNode, project: GroupNode, network: NetworkNode }
 
+// 레이어 도구와 범례가 노드를 가리지 않도록 위아래를 비운다.
+const FIT_PADDING = { top: '56px', bottom: '48px', left: '16px', right: '16px' } as const
+
 function FitButton() {
   const { fitView } = useReactFlow()
   return (
-    <button type="button" className="tool-button" onClick={() => fitView({ padding: 0.06, duration: 150 })}>
+    <button type="button" className="tool-button" onClick={() => fitView({ padding: FIT_PADDING, duration: 150 })}>
       맞춤
     </button>
   )
@@ -359,7 +362,7 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
       minZoom={0.25}
       maxZoom={1.6}
       fitView
-      fitViewOptions={{ padding: 0.06 }}
+      fitViewOptions={{ padding: FIT_PADDING }}
       onNodeClick={(_, node) => updateContext({ target: node.id, event: undefined })}
       onPaneClick={() => updateContext({ target: undefined, event: undefined })}
     >

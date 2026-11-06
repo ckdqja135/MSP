@@ -88,8 +88,12 @@ function collectorText(state: string): string {
   return '수집 실패'
 }
 
+// HostDetail은 값이 없는 이유를 수집기 상태로 구분해 표시한다. 미지원과 수집 실패를 0으로 보이지 않게 한다.
 function HostDetail({ server, now }: { server: Server; now: number }) {
-  const metric = (name: string, format: (value: number) => string) => {
+  const metric = (name: string, format: (value: number) => string, collectorName?: string) => {
+    const collector = server.collectors.find((item) => item.name === collectorName)
+    if (collector?.state === 'unsupported') return <span className="muted"><UnsupportedIcon /> 미지원</span>
+    if (collector?.state === 'error') return <span className="collect-failed">수집 실패</span>
     const value = readMetric(server.metrics[name], now, format)
     return value.state === 'stale' ? `${value.text} (${value.age} 값)` : value.text
   }
@@ -110,13 +114,14 @@ function HostDetail({ server, now }: { server: Server; now: number }) {
       </section>
       <section className="detail-section">
         <h3>지표</h3>
-        <Row label="CPU">{metric('host.cpu.percent', formatPercent)}</Row>
-        <Row label="메모리">{metric('host.mem.percent', formatPercent)}</Row>
-        <Row label="디스크">{metric('host.disk.percent', formatPercent)}</Row>
-        <Row label="디스크 읽기">{metric('host.disk.read_bps', formatRate)}</Row>
-        <Row label="디스크 쓰기">{metric('host.disk.write_bps', formatRate)}</Row>
-        <Row label="네트워크 수신">{metric('host.net.rx_bps', formatRate)}</Row>
-        <Row label="네트워크 송신">{metric('host.net.tx_bps', formatRate)}</Row>
+        <Row label="CPU">{metric('host.cpu.percent', formatPercent, 'cpu')}</Row>
+        <Row label="메모리">{metric('host.mem.percent', formatPercent, 'memory')}</Row>
+        <Row label="디스크">{metric('host.disk.percent', formatPercent, 'disk')}</Row>
+        <Row label="디스크 읽기">{metric('host.disk.read_bps', formatRate, 'disk_io')}</Row>
+        <Row label="디스크 쓰기">{metric('host.disk.write_bps', formatRate, 'disk_io')}</Row>
+        <Row label="네트워크 수신">{metric('host.net.rx_bps', formatRate, 'network')}</Row>
+        <Row label="네트워크 송신">{metric('host.net.tx_bps', formatRate, 'network')}</Row>
+        <Row label="온도">{metric('host.temperature', (v) => `${v.toFixed(0)}°C`, 'temperature')}</Row>
       </section>
       <section className="detail-section">
         <h3>수집기</h3>
@@ -282,7 +287,7 @@ function ProjectDetail({ project }: { project: Project }) {
 
 export function DetailPanel({ meta, server, topology, target, now, selectedEvent, events }: Props) {
   const parsed = parseTarget(target)
-  let content: ReactNode = <p className="muted empty">맵이나 왼쪽 목록에서 대상을 선택하면 상세 정보가 표시됩니다.</p>
+  let content: ReactNode = selectedEvent ? null : <p className="muted empty">맵이나 왼쪽 목록에서 대상을 선택하면 상세 정보가 표시됩니다.</p>
 
   if (parsed?.kind === 'host' && server) {
     content = <HostDetail server={server} now={now} />

@@ -1,11 +1,12 @@
 import { useLayoutEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import type { EventRow, GapRow, Meta } from '../api'
+import type { EventRow, GapRow, Meta, Server, Topology } from '../api'
 import { parseTarget, updateContext, type ConsoleContext } from '../context'
 import { formatClock, formatDuration, formatSize, isLateArrival } from '../format'
 import { CATEGORY_LABEL, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
 import { StatusIcon } from './Icons'
+import { MetricsPanel } from './MetricsPanel'
 
 const ROW_HEIGHT = 26
 
@@ -148,9 +149,13 @@ interface Props {
   context: ConsoleContext
   flow: FlowData
   selectedID?: string
+  server?: Server
+  topology?: Topology
+  selectedEvent?: EventRow
+  now: number
 }
 
-export function BottomPanel({ meta, context, flow, selectedID }: Props) {
+export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now }: Props) {
   const selectedCategories = context.categories ? context.categories.split(',') : Object.keys(CATEGORY_LABEL)
   const toggleCategory = (category: string) => {
     const next = selectedCategories.includes(category)
@@ -205,7 +210,9 @@ export function BottomPanel({ meta, context, flow, selectedID }: Props) {
         )}
       </div>
       {context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}
-      {context.tab === 'metrics' && <p className="placeholder">지표 차트는 다음 단계에서 추가합니다.</p>}
+      {context.tab === 'metrics' && server && (
+        <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} />
+      )}
       {context.tab === 'logs' && <p className="placeholder">로그 조회는 다음 단계에서 추가합니다.</p>}
     </section>
   )

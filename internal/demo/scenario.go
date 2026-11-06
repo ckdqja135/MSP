@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/protocol"
@@ -35,6 +36,8 @@ const (
 	apiRestart   = 335 * time.Second
 	apiHealthy   = 390 * time.Second
 	appRecreate  = 480 * time.Second
+	// 이 구간에는 디스크 I/O 수집이 실패한다. 값이 없는 이유를 구분해 보여주기 위한 구간이다.
+	diskIOFailFrom = 540 * time.Second
 )
 
 type service struct {
@@ -233,6 +236,9 @@ func (s *Scenario) samplesAt(t time.Time) []protocol.Sample {
 	}
 	samples := make([]protocol.Sample, 0, 64)
 	for _, m := range host {
+		if phase >= diskIOFailFrom && strings.HasPrefix(m.name, "host.disk.") && m.name != "host.disk.percent" {
+			continue
+		}
 		samples = append(samples, protocol.Sample{At: t, Scope: protocol.HostScope, Name: m.name, Value: m.value})
 	}
 
@@ -372,7 +378,7 @@ func (s *Scenario) Batch(from, to time.Time) protocol.Batch {
 	batch.Heartbeat = &protocol.Heartbeat{
 		AgentVersion: "demo", BootTime: s.origin.Add(-72 * time.Hour),
 		UptimeSeconds: int64(to.Sub(s.origin.Add(-72*time.Hour)) / time.Second), DockerOK: true,
-		Collectors: collectorStatus(to),
+		Collectors: s.collectorStatus(to),
 	}
 	batch.Topology = s.topologyAt(to)
 	batch.Events = s.eventsBetween(from, to)
@@ -393,11 +399,16 @@ func nextGrid(after time.Time, step time.Duration) time.Time {
 	return after.Truncate(step).Add(step)
 }
 
-func collectorStatus(at time.Time) []protocol.CollectorStatus {
+func (s *Scenario) collectorStatus(at time.Time) []protocol.CollectorStatus {
+	diskIO := protocol.CollectorStatus{Name: "disk_io", State: protocol.CollectorOK, LastSuccess: &at}
+	if _, phase := s.position(at); phase >= diskIOFailFrom {
+		diskIO = protocol.CollectorStatus{Name: "disk_io", State: protocol.CollectorError, Error: "디스크 통계를 읽지 못했습니다 (데모)"}
+	}
 	return []protocol.CollectorStatus{
 		{Name: "cpu", State: protocol.CollectorOK, LastSuccess: &at},
 		{Name: "memory", State: protocol.CollectorOK, LastSuccess: &at},
 		{Name: "disk", State: protocol.CollectorOK, LastSuccess: &at},
+		diskIO,
 		{Name: "network", State: protocol.CollectorOK, LastSuccess: &at},
 		{Name: "temperature", State: protocol.CollectorUnsupported, Error: "이 환경에서 온도 센서를 찾지 못했습니다"},
 	}

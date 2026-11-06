@@ -192,3 +192,19 @@ export function fetchEvents(server: string, query: EventQuery) {
 export function fetchGaps(server: string, from: string, to: string) {
   return get<GapRow[]>(`/servers/${encodeURIComponent(server)}/gaps`, new URLSearchParams({ from, to }))
 }
+
+export interface SampleSeries {
+  name: string
+  points: { t: number; v: number }[]
+}
+
+export interface SamplesResponse {
+  step_ms: number
+  series: SampleSeries[]
+}
+
+export function fetchSamples(server: string, scope: string, names: string[], from: string, to: string, points: number) {
+  const params = new URLSearchParams({ scope, from, to, points: String(points) })
+  names.forEach((name) => params.append('name', name))
+  return get<SamplesResponse>(`/servers/${encodeURIComponent(server)}/samples`, params)
+}
