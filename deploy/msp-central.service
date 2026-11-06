@@ -1,0 +1,41 @@
+[Unit]
+Description=MSP 중앙 서버
+After=network.target
+
+[Service]
+Slice=msp.slice
+User=msp-central
+Group=msp-central
+StateDirectory=msp-central
+StateDirectoryMode=0700
+Environment=GOMEMLIMIT=96MiB
+Environment=GOMAXPROCS=1
+# 접속은 루프백뿐이다. 화면은 SSH 터널로 연다.
+ExecStart=/opt/msp/msp-central --db /var/lib/msp-central/msp.db --web-dir /opt/msp/dist --config /etc/msp/central.json --listen 127.0.0.1:8787
+Restart=always
+RestartSec=10
+CPUQuota=20%
+UMask=0077
+
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

@@ -67,6 +67,7 @@ type fileConfig struct {
 	HeartbeatURL     string                  `json:"heartbeat_url"`
 	ConnectivityURLs []string                `json:"connectivity_urls"`
 	ExternalProbes   []central.ExternalProbe `json:"external_probes"`
+	SameHostServers  []string                `json:"same_host_servers"`
 }
 
 func loadConfig(path string) (fileConfig, error) {
@@ -134,6 +135,10 @@ func serve(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := central.ValidateExternalProbes(settings.ExternalProbes, settings.SameHostServers); err != nil {
+		return err
+	}
+	store.SetSameHost(settings.SameHostServers)
 	// 데모는 외부로 아무것도 보내지 않는다.
 	var notifier central.Notifier
 	if !*demoMode && settings.AlertWebhookURL != "" {

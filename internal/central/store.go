@@ -108,6 +108,8 @@ type Store struct {
 	db      *sql.DB
 	mode    protocol.Mode
 	writeMu sync.Mutex
+	// sameHost는 중앙 서버와 같은 장비에서 도는 서버다. 수신이 끊겨도 장비가 멈춘 것으로 보지 않는다.
+	sameHost map[string]bool
 }
 
 // OpenStore는 DB를 연다. 다른 모드로 만들어진 DB는 거부해 실제 데이터와 데모 데이터가 섞이지 않게 한다.
@@ -335,6 +337,14 @@ func nullable(v *int64) any {
 	return *v
 }
 
+// SetSameHost는 시작할 때 한 번 호출한다.
+func (s *Store) SetSameHost(serverIDs []string) {
+	s.sameHost = make(map[string]bool, len(serverIDs))
+	for _, id := range serverIDs {
+		s.sameHost[id] = true
+	}
+}
+
 // Purge는 보관 기간이 지난 기록을 지운다.
 func (s *Store) Purge(ctx context.Context, now time.Time) error {
 	s.writeMu.Lock()
@@ -345,7 +355,8 @@ func (s *Store) Purge(ctx context.Context, now time.Time) error {
 		query string
 		limit int64
 	}{
-		{`DELETE FROM samples WHERE at < ?`, sampleLimit},
+		// server_id를 조건에 넣어야 시간 인덱스를 탄다. 없으면 지울 것이 없어도 표 전체를 훑으며 쓰기를 막는다.
+		{`DELETE FROM samples WHERE server_id IN (SELECT id FROM servers) AND at < ?`, sampleLimit},
 		{`DELETE FROM events WHERE occurred_at < ?`, recordLimit},
 		{`DELETE FROM gaps WHERE to_at < ?`, recordLimit},
 		{`DELETE FROM topology_versions WHERE valid_to IS NOT NULL AND valid_to < ?`, recordLimit},

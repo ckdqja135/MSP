@@ -2,8 +2,10 @@ package central
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -19,6 +21,17 @@ type ExternalProbe struct {
 	Service   string `json:"service"`
 	URL       string `json:"url"`
 	TimeoutMS int64  `json:"timeout_ms"`
+}
+
+// ValidateExternalProbes는 같은 장비에서 보내는 요청을 외부 확인으로 기록하지 않게 막는다.
+// 공유기 안쪽에서 되돌아 들어가는 경로라 바깥에서 닿는지는 알 수 없다.
+func ValidateExternalProbes(probes []ExternalProbe, sameHost []string) error {
+	for _, target := range probes {
+		if slices.Contains(sameHost, target.Server) {
+			return fmt.Errorf("external_probes의 %s는 중앙 서버와 같은 장비라 외부 확인이 될 수 없습니다", target.Service)
+		}
+	}
+	return nil
 }
 
 // RunExternalProbes는 외부 관측점으로서 서비스 응답을 주기적으로 확인한다.

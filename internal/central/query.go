@@ -28,6 +28,7 @@ type ServerView struct {
 	DockerOK      bool                       `json:"docker_ok"`
 	Collectors    []protocol.CollectorStatus `json:"collectors"`
 	Reachability  Reachability               `json:"reachability"`
+	SameHost      bool                       `json:"same_host"`
 	Metrics       map[string]LatestValue     `json:"metrics"`
 }
 
@@ -78,7 +79,8 @@ func (s *Store) Servers(ctx context.Context, now time.Time) ([]ServerView, error
 		if err != nil {
 			return nil, err
 		}
-		servers[i].Reachability = reachabilityOf(seen, now, servers[i].DockerOK, externalOK)
+		servers[i].SameHost = s.sameHost[servers[i].ID]
+		servers[i].Reachability = reachabilityOf(seen, now, servers[i].DockerOK, externalOK, servers[i].SameHost)
 		latest, err := s.latestSamples(ctx, servers[i].ID, now)
 		if err != nil {
 			return nil, err
@@ -106,7 +108,7 @@ const latestWindow = 2 * time.Minute
 
 func (s *Store) latestSamples(ctx context.Context, serverID string, at time.Time) (map[string]map[string]LatestValue, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT scope, name, value, MAX(at) FROM samples
+		SELECT scope, name, value, MAX(at) FROM samples INDEXED BY samples_time
 		WHERE server_id = ? AND at > ? AND at <= ?
 		GROUP BY scope, name`, serverID, at.Add(-latestWindow).UnixMilli(), at.UnixMilli())
 	if err != nil {

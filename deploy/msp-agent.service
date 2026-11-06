@@ -1,0 +1,43 @@
+[Unit]
+Description=MSP 에이전트 (읽기 전용 수집)
+After=network.target msp-central.service
+
+[Service]
+Slice=msp.slice
+User=msp-agent
+Group=msp-agent
+# Docker 소켓 읽기에만 필요하다. 클라이언트는 GET과 허용 경로 외의 요청을 보내지 않는다.
+SupplementaryGroups=docker
+StateDirectory=msp-agent
+StateDirectoryMode=0700
+Environment=GOMEMLIMIT=64MiB
+Environment=GOMAXPROCS=1
+ExecStart=/opt/msp/msp-agent --config /etc/msp/agent.json
+Restart=always
+RestartSec=10
+CPUQuota=10%
+UMask=0077
+
+# 다른 프로세스의 /proc를 읽어야 하므로 ProtectProc과 ProcSubset은 쓰지 않는다.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

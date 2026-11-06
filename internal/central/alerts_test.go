@@ -486,3 +486,44 @@ func TestAlertsAPIListsActiveFirst(t *testing.T) {
 		t.Errorf("alerts = %+v", alerts)
 	}
 }
+
+func TestSameHostAgentLossAlertSaysServerIsUp(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	store.SetSameHost([]string{"home-1"})
+	batch := liveBatch(1, baseTime)
+	batch.Heartbeat = &protocol.Heartbeat{AgentVersion: "t", BootTime: baseTime.Add(-time.Hour), DockerOK: true}
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	notifier := &recordingNotifier{}
+	engine := NewAlertEngine(store, notifier, NewHub(), "", baseTime.Add(-time.Hour))
+	engine.SelfCheck = func(context.Context) bool { return false }
+	if err := engine.Evaluate(ctx, baseTime.Add(5*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(notifier.sent) != 1 {
+		t.Fatalf("인터넷이 끊겨도 같은 장비의 에이전트 끊김은 알려야 한다: %+v", notifier.sent)
+	}
+	if title := notifier.sent[0].Alert.Title; title != agentLostSameHost {
+		t.Errorf("제목 = %q", title)
+	}
+}
+
+func TestUnchangedAlertIsNotRewritten(t *testing.T) {
+	now := baseTime
+	idle := Alert{State: alertIdle, Title: "제목"}
+	next, kind := stepAlert(idle, AlertCondition{Title: "제목"}, now)
+	if kind != "" || alertChanged(idle, next) {
+		t.Errorf("조건이 꺼진 채 그대로인데 바뀐 것으로 봤다: %+v", next)
+	}
+	next, _ = stepAlert(idle, AlertCondition{Title: "제목", Active: true, HoldFor: time.Minute}, now)
+	if !alertChanged(idle, next) {
+		t.Errorf("대기 시작을 바뀐 것으로 보지 않았다: %+v", next)
+	}
+	firing := Alert{State: alertFiring, Title: "제목", Detail: "현재 90.0%"}
+	next, _ = stepAlert(firing, AlertCondition{Title: "제목", Detail: "현재 91.0%", Active: true}, now)
+	if !alertChanged(firing, next) {
+		t.Errorf("상세 값 변화를 놓쳤다: %+v", next)
+	}
+}

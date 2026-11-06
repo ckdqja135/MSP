@@ -11,6 +11,7 @@ import (
 	"log"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -114,6 +115,22 @@ func recentTransitions(list []time.Time, now time.Time) []time.Time {
 		}
 	}
 	return kept
+}
+
+func sameMoment(a, b *time.Time) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Equal(*b)
+}
+
+func alertChanged(before, after Alert) bool {
+	return before.State != after.State || before.Title != after.Title || before.Detail != after.Detail ||
+		before.Severity != after.Severity || before.NotifyCount != after.NotifyCount ||
+		!sameMoment(before.PendingSince, after.PendingSince) || !sameMoment(before.ClearSince, after.ClearSince) ||
+		!sameMoment(before.FiredAt, after.FiredAt) || !sameMoment(before.ResolvedAt, after.ResolvedAt) ||
+		!sameMoment(before.LastNotifiedAt, after.LastNotifiedAt) ||
+		!slices.EqualFunc(before.Transitions, after.Transitions, time.Time.Equal)
 }
 
 // stepAlert는 한 번의 평가를 반영하고 보낼 알림 종류를 돌려준다. 시간을 인자로 받아 시험할 수 있다.
@@ -296,6 +313,10 @@ func numberOf(metrics map[string]LatestValue, name string) (float64, bool) {
 // 알림이 쏟아지지 않게 하고, 진행 중인 알림의 상태도 바꾸지 않는다.
 func (e *AlertEngine) conditions(ctx context.Context, server ServerView, now time.Time, firing map[string]bool) ([]AlertCondition, error) {
 	lost := server.Reachability.State == "lost"
+	agentLostTitle := "에이전트 수신 끊김, 서비스는 응답 중"
+	if server.SameHost {
+		agentLostTitle = agentLostSameHost
+	}
 	list := []AlertCondition{{
 		Key: "server_unreachable", Rule: "server_unreachable", Target: "host", Severity: protocol.SeverityCritical,
 		Title:  "서버 응답 없음, 원인 미상",
@@ -303,7 +324,7 @@ func (e *AlertEngine) conditions(ctx context.Context, server ServerView, now tim
 		Active: lost, ClearFor: time.Minute,
 	}, {
 		Key: "agent_lost", Rule: "agent_lost", Target: "host", Severity: protocol.SeverityWarning,
-		Title:  "에이전트 수신 끊김, 서비스는 응답 중",
+		Title:  agentLostTitle,
 		Detail: server.Reachability.Detail,
 		Active: server.Reachability.State == "agent_lost", ClearFor: time.Minute,
 	}}
@@ -428,7 +449,8 @@ func (e *AlertEngine) Evaluate(ctx context.Context, now time.Time) error {
 		}
 		for _, condition := range conditions {
 			// 중앙 서버 자신이 인터넷에 닿지 못하면 서버 장애로 단정하지 않는다.
-			if !selfOK && (condition.Rule == "server_unreachable" || condition.Rule == "agent_lost") {
+			// 같은 장비의 에이전트는 인터넷을 거치지 않으므로 이 판단과 무관하다.
+			if !selfOK && !server.SameHost && (condition.Rule == "server_unreachable" || condition.Rule == "agent_lost") {
 				continue
 			}
 			alert, err := e.store.loadAlert(ctx, server.ID, condition)
@@ -439,6 +461,10 @@ func (e *AlertEngine) Evaluate(ctx context.Context, now time.Time) error {
 			if kind != "" {
 				next.LastNotifiedAt = &now
 				next.NotifyCount++
+			}
+			// 대부분의 평가는 바뀐 것이 없다. 10초마다 모든 조건을 다시 쓰지 않는다.
+			if !alertChanged(alert, next) {
+				continue
 			}
 			id, err := e.store.saveAlert(ctx, next)
 			if err != nil {

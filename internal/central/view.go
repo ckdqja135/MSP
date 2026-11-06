@@ -104,6 +104,8 @@ type TopologyView struct {
 	HostServices []protocol.HostService `json:"host_services"`
 }
 
+const agentLostSameHost = "에이전트 수신 끊김, 서버는 동작 중"
+
 // Reachability는 서버 도달 상태다. 응답 중단만으로 정전이나 OS 장애를 단정하지 않는다.
 type Reachability struct {
 	State  string `json:"state"`
@@ -111,12 +113,15 @@ type Reachability struct {
 	Detail string `json:"detail"`
 }
 
-func reachabilityOf(lastSeen, now time.Time, dockerOK, externalOK bool) Reachability {
+func reachabilityOf(lastSeen, now time.Time, dockerOK, externalOK, sameHost bool) Reachability {
 	if lastSeen.IsZero() {
 		return Reachability{State: "unknown", Label: "수신 기록 없음", Detail: "에이전트 데이터를 받은 적이 없습니다."}
 	}
 	age := now.Sub(lastSeen)
 	switch {
+	case age >= heartbeatLostAfter && sameHost:
+		return Reachability{State: "agent_lost", Label: agentLostSameHost,
+			Detail: "중앙 서버가 같은 장비에서 동작 중이므로 전원과 OS는 살아 있습니다. 에이전트가 멈췄거나 응답하지 못하는 상태입니다."}
 	case age >= heartbeatLostAfter && externalOK:
 		return Reachability{State: "agent_lost", Label: "에이전트 또는 연결 문제, 서비스는 응답 중",
 			Detail: "에이전트 수신은 끊겼지만 외부에서 서비스가 응답합니다. 서버가 멈췄다고 볼 수 없습니다."}

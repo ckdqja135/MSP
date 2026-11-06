@@ -307,7 +307,7 @@ func TestReachabilityNeverClaimsACause(t *testing.T) {
 		{5 * time.Minute, "lost"},
 	}
 	for _, tc := range cases {
-		r := reachabilityOf(now.Add(-tc.age), now, true, false)
+		r := reachabilityOf(now.Add(-tc.age), now, true, false, false)
 		if r.State != tc.state {
 			t.Errorf("age %v: %s, want %s", tc.age, r.State, tc.state)
 		}
@@ -315,10 +315,10 @@ func TestReachabilityNeverClaimsACause(t *testing.T) {
 			t.Errorf("원인을 단정했다: %s", r.Label)
 		}
 	}
-	if r := reachabilityOf(now, now, false, false); r.State != "docker_down" {
+	if r := reachabilityOf(now, now, false, false, false); r.State != "docker_down" {
 		t.Errorf("Docker 중단 구분 실패: %+v", r)
 	}
-	if r := reachabilityOf(now.Add(-5*time.Minute), now, true, true); r.State != "agent_lost" || strings.Contains(r.Label, "서버 응답 없음") {
+	if r := reachabilityOf(now.Add(-5*time.Minute), now, true, true, false); r.State != "agent_lost" || strings.Contains(r.Label, "서버 응답 없음") {
 		t.Errorf("외부 응답이 있는데 서버 장애로 표시했다: %+v", r)
 	}
 }
@@ -549,6 +549,96 @@ func TestDashboardHasNoMutatingRoutes(t *testing.T) {
 			if resp.StatusCode != http.StatusMethodNotAllowed && resp.StatusCode != http.StatusNotFound {
 				t.Errorf("%s %s: %d", method, path, resp.StatusCode)
 			}
+		}
+	}
+}
+
+func TestSameHostLossIsNotServerLoss(t *testing.T) {
+	now := baseTime
+	r := reachabilityOf(now.Add(-5*time.Minute), now, true, false, true)
+	if r.State != "agent_lost" || strings.Contains(r.Label, "서버 응답 없음") {
+		t.Errorf("중앙 서버가 동작 중인데 서버 장애처럼 표시했다: %+v", r)
+	}
+	if r := reachabilityOf(now.Add(-40*time.Second), now, true, false, true); r.State != "delayed" {
+		t.Errorf("짧은 지연은 그대로 지연이어야 한다: %+v", r)
+	}
+}
+
+func TestExternalProbeFromSameHostIsRejected(t *testing.T) {
+	probes := []ExternalProbe{{Server: "home-1", Service: "blog/web", URL: "https://blog.example.test/"}}
+	if err := ValidateExternalProbes(probes, []string{"home-1"}); err == nil {
+		t.Error("같은 장비에서 보내는 요청을 외부 확인으로 받아들였다")
+	}
+	if err := ValidateExternalProbes(probes, []string{"home-2"}); err != nil {
+		t.Errorf("다른 장비의 외부 확인을 막았다: %v", err)
+	}
+}
+
+func queryPlan(t *testing.T, store *Store, query string, args ...any) string {
+	t.Helper()
+	rows, err := store.db.Query("EXPLAIN QUERY PLAN "+query, args...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	plan := ""
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err := rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan += detail + "\n"
+	}
+	return plan
+}
+
+func TestPurgeRemovesOnlyExpiredSamples(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	if err := store.Enroll(ctx, "home-1", "token"); err != nil {
+		t.Fatal(err)
+	}
+	old := baseTime.Add(-sampleRetention - time.Minute)
+	recent := baseTime.Add(-sampleRetention + time.Minute)
+	batch := liveBatch(1, baseTime)
+	batch.Samples = []protocol.Sample{
+		{At: old, Scope: protocol.HostScope, Name: "host.cpu.percent", Value: 1},
+		{At: recent, Scope: protocol.HostScope, Name: "host.cpu.percent", Value: 2},
+	}
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Purge(ctx, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	var remaining []float64
+	rows, err := store.db.QueryContext(ctx, `SELECT value FROM samples`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var value float64
+		if err := rows.Scan(&value); err != nil {
+			t.Fatal(err)
+		}
+		remaining = append(remaining, value)
+	}
+	if len(remaining) != 1 || remaining[0] != 2 {
+		t.Errorf("남은 값 = %v, want [2]", remaining)
+	}
+}
+
+// 10초와 1시간마다 도는 쿼리가 표 전체를 훑지 않는지 본다. 데이터가 쌓일수록 부하가 커지는 것을 막는다.
+func TestPeriodicQueriesUseTimeIndex(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	for name, plan := range map[string]string{
+		"정리":  queryPlan(t, store, `DELETE FROM samples WHERE server_id IN (SELECT id FROM servers) AND at < ?`, 1),
+		"최신값": queryPlan(t, store, `SELECT scope, name, value, MAX(at) FROM samples INDEXED BY samples_time WHERE server_id = ? AND at > ? AND at <= ? GROUP BY scope, name`, "a", 1, 2),
+	} {
+		if !strings.Contains(plan, "samples_time") || !strings.Contains(plan, "at") || strings.Contains(plan, "SCAN samples") {
+			t.Errorf("%s 쿼리가 시간 인덱스를 쓰지 않는다:\n%s", name, plan)
 		}
 	}
 }
