@@ -33,7 +33,7 @@ const (
 	apiHangStart = 180 * time.Second
 	apiUnhealthy = 210 * time.Second
 	apiOOM       = 330 * time.Second
-	apiRestart   = 335 * time.Second
+	apiRestart   = 350 * time.Second
 	apiHealthy   = 390 * time.Second
 	appRecreate  = 480 * time.Second
 	// 이 구간에는 디스크 I/O 수집이 실패한다. 값이 없는 이유를 구분해 보여주기 위한 구간이다.

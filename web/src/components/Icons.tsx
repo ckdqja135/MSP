@@ -55,31 +55,6 @@ export function UnsupportedIcon() {
   )
 }
 
-// 아이소메트릭 아이콘은 2D SVG로 그린다. 입체감은 면의 밝기 차이로만 표현한다.
-export function IsoContainer({ stopped, size = 30 }: { stopped?: boolean; size?: number }) {
-  const dash = stopped ? '2 2' : undefined
-  return (
-    <svg className={`iso ${stopped ? 'iso-stopped' : ''}`} viewBox="0 0 32 32" width={size} height={size} aria-hidden="true">
-      <path className="iso-top" d="M16 3l12 6-12 6-12-6z" strokeDasharray={dash} />
-      <path className="iso-left" d="M4 9l12 6v14L4 23z" strokeDasharray={dash} />
-      <path className="iso-right" d="M28 9L16 15v14l12-6z" strokeDasharray={dash} />
-      {!stopped && <path className="iso-mark" d="M7 13.5l6 3M7 17l6 3" />}
-    </svg>
-  )
-}
-
-export function IsoServer({ size = 52 }: { size?: number }) {
-  return (
-    <svg className="iso" viewBox="0 0 48 48" width={size} height={size} aria-hidden="true">
-      <path className="iso-top" d="M24 3l18 9-18 9-18-9z" />
-      <path className="iso-left" d="M6 12l18 9v22L6 34z" />
-      <path className="iso-right" d="M42 12L24 21v22l18-9z" />
-      <path className="iso-mark" d="M9 18l12 6M9 23l12 6M9 28l12 6" />
-      <path className="iso-mark" d="M28 26l3-1.5M28 31l3-1.5M28 36l3-1.5" />
-    </svg>
-  )
-}
-
 export function IsoNetwork({ size = 16 }: { size?: number }) {
   return (
     <svg className="iso" viewBox="0 0 20 20" width={size} height={size} aria-hidden="true">

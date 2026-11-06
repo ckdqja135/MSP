@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Handle,
   Panel,
@@ -6,28 +6,59 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useViewport,
   type Edge,
+  type EdgeProps,
   type Node,
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import type { Project, Server, Service, Topology } from '../api'
+import { diffActivities, eventActivity, mergeCallouts, type Activity } from '../activity'
+import type { EventRow, Network, Project, Server, Service, Topology } from '../api'
 import { updateContext } from '../context'
 import { formatBytes, formatPercent, formatUptime, readMetric } from '../format'
-import { assignSlots, computeLayout, emptySlots, type SlotMemory } from '../layout'
+import {
+  CELL_X,
+  CELL_Y,
+  assignSlots,
+  computeScene,
+  emptySlots,
+  routeBetween,
+  serviceRole,
+  type Point,
+  type SceneDevice,
+  type ScenePlate,
+  type SlotMemory,
+} from '../scene'
 import { STATUS_LABEL, projectLabel, serviceHeadline } from '../status'
-import { IsoContainer, IsoNetwork, IsoServer, StatusIcon, UnsupportedIcon } from './Icons'
+import { StatusIcon, UnsupportedIcon } from './Icons'
+import { CloudIcon, HostIcon, ServiceIcon, SwitchIcon } from './IsoIcons'
 
 export interface MapHighlight {
   nodes: ReadonlySet<string>
   note?: string
 }
 
-export interface Layers {
+interface Layers {
   ports: boolean
   networks: boolean
   declared: boolean
+  activity: boolean
 }
+
+// 장비 상자의 크기와 바닥 중심 위치다. 연결선은 바닥 중심에서 끝난다.
+const DEVICE_BOX = {
+  service: { width: 300, height: 100, anchorX: 42, anchorY: 66 },
+  switch: { width: 260, height: 66, anchorX: 39, anchorY: 42 },
+  host: { width: 250, height: 196, anchorX: 58, anchorY: 164 },
+  internet: { width: 260, height: 92, anchorX: 62, anchorY: 50 },
+} as const
+
+const CALLOUT = { width: 236, height: 86, offsetX: 34, offsetY: 138 }
+const MAX_CALLOUTS = 6
+const ENTER_ANIMATION_MS = 2400
+const STAGE_DELAY_MS = 260
+const FIT_PADDING = { top: '48px', bottom: '40px', left: '16px', right: '16px' } as const
 
 function loadJSON<T>(key: string, fallback: T): T {
   try {
@@ -61,89 +92,163 @@ function serviceTotals(service: Service) {
   }
 }
 
-type ServiceData = { service: Service; selected: boolean; highlighted: boolean; dimmed: boolean; now: number }
+type DeviceFlags = {
+  selected: boolean
+  highlighted: boolean
+  dimmed: boolean
+  entering: boolean
+  enterDelay: number
+}
+
+function deviceClasses(base: string, flags: DeviceFlags, extra?: string): string {
+  return [base, extra, flags.selected && 'selected', flags.highlighted && 'highlighted', flags.dimmed && 'dimmed', flags.entering && 'entering']
+    .filter(Boolean)
+    .join(' ')
+}
+
+function Handles() {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} className="hidden-handle" />
+      <Handle type="source" position={Position.Right} className="hidden-handle" />
+    </>
+  )
+}
+
+type ServiceData = DeviceFlags & { service: Service; now: number }
 
 const ServiceNode = memo(function ServiceNode({ data }: NodeProps<Node<ServiceData, 'service'>>) {
-  const { service, selected, highlighted, dimmed, now } = data
+  const { service, now } = data
+  const container = service.containers[0]
+  const address = container?.networks?.find((network) => network.ip)?.ip
   const published = service.containers.flatMap((c) => c.ports ?? []).filter((p) => p.host_port)
   const totals = serviceTotals(service)
   const cpu = readMetric(totals.cpu, now, formatPercent)
   const mem = readMetric(totals.mem, now, formatBytes)
   const stopped = service.runtime === 'stopped'
-  const classes = ['service-card', service.status, selected && 'selected', highlighted && 'highlighted', dimmed && 'dimmed']
+  const abnormal = service.status !== 'ok'
+  const ports = [...new Set(published.map((p) => `${p.host_ip === '127.0.0.1' ? '127.0.0.1:' : ''}${p.host_port}→${p.container_port}`))]
   return (
-    <div className={classes.filter(Boolean).join(' ')}>
-      <Handle type="target" position={Position.Left} id="left" className="hidden-handle" />
-      <Handle type="source" position={Position.Right} id="right-out" className="hidden-handle" />
-      <Handle type="target" position={Position.Right} id="right-in" className="hidden-handle" />
-      <div className="card-head">
-        <IsoContainer stopped={stopped} />
-        <div className="card-title">
+    <div
+      className={deviceClasses('device service-card', data, `${service.status} role-${serviceRole(service)}`)}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <ServiceIcon role={serviceRole(service)} />
+      <div className="device-label">
+        <div className="device-name">
           <strong>{service.name}</strong>
-          {service.containers.length > 1 && <span className="mono muted"> ×{service.containers.length}</span>}
-        </div>
-        <span className={`badge ${service.status}`}>
-          <StatusIcon status={service.status} size={12} />
-          {STATUS_LABEL[service.status]}
-        </span>
-      </div>
-      <div className="card-line">{serviceHeadline(service)}</div>
-      {published.length > 0 ? (
-        <div className="card-line mono muted ellipsis">
-          {published.map((p) => `${p.host_ip === '127.0.0.1' ? '127.0.0.1:' : ''}${p.host_port}→${p.container_port}`).join(' ')}
-        </div>
-      ) : (
-        <div className="card-line muted">공개 포트 없음</div>
-      )}
-      {stopped ? (
-        <div className="card-line muted">지표 없음 (실행 중 아님)</div>
-      ) : (
-        <div className="card-line mono">
-          <span className={cpu.state === 'stale' ? 'stale' : ''}>CPU {cpu.text}</span>
-          <span className={mem.state === 'stale' ? 'stale' : ''}> · MEM {mem.text}</span>
-        </div>
-      )}
-    </div>
-  )
-})
-
-type HostData = { server: Server; selected: boolean; now: number }
-
-const HostNode = memo(function HostNode({ data }: NodeProps<Node<HostData, 'host'>>) {
-  const { server, selected, now } = data
-  const metric = (name: string, format: (value: number) => string) => readMetric(server.metrics[name], now, format)
-  const temperature = server.collectors.find((c) => c.name === 'temperature')
-  return (
-    <div className={`host-card ${selected ? 'selected' : ''}`}>
-      <Handle type="source" position={Position.Bottom} className="hidden-handle" />
-      <IsoServer />
-      <div className="host-name">
-        <strong>{server.id}</strong>
-        <span className="muted">서버 · 가동 {formatUptime(server.uptime_seconds)}</span>
-      </div>
-      <div className="host-metrics mono">
-        <span>CPU {metric('host.cpu.percent', formatPercent).text}</span>
-        <span>MEM {metric('host.mem.percent', formatPercent).text}</span>
-        <span>DISK {metric('host.disk.percent', formatPercent).text}</span>
-        {temperature?.state === 'unsupported' ? (
-          <span className="muted">
-            <UnsupportedIcon /> 온도 미지원
+          {service.containers.length > 1 && <span className="muted"> ×{service.containers.length}</span>}
+          <span className={`badge ${service.status}`}>
+            <StatusIcon status={service.status} size={11} />
+            {STATUS_LABEL[service.status]}
           </span>
-        ) : (
-          <span>온도 {metric('host.temperature', (v) => `${v.toFixed(0)}°C`).text}</span>
+        </div>
+        <div className="device-address">
+          {stopped ? '실행 중 아님' : (address ?? '주소 없음')}
+          {ports.length > 0 && <span className="device-ports"> · {ports.join(' ')}</span>}
+        </div>
+        {abnormal && <div className="device-state">{serviceHeadline(service)}</div>}
+        {!stopped && (
+          <div className="device-metrics">
+            <span className={cpu.state === 'stale' ? 'stale' : ''}>CPU {cpu.text}</span>
+            <span className={mem.state === 'stale' ? 'stale' : ''}> · {mem.text}</span>
+          </div>
         )}
       </div>
     </div>
   )
 })
 
-type GroupData = { project: Project; selected: boolean; collapsed: boolean; onToggle: () => void }
+type HostData = DeviceFlags & { server: Server; now: number }
 
-const GroupNode = memo(function GroupNode({ data }: NodeProps<Node<GroupData, 'project'>>) {
-  const { project, selected, collapsed, onToggle } = data
+const HostNode = memo(function HostNode({ data }: NodeProps<Node<HostData, 'host'>>) {
+  const { server, now } = data
+  const metric = (name: string, format: (value: number) => string) => readMetric(server.metrics[name], now, format).text
+  const temperature = server.collectors.find((c) => c.name === 'temperature')
+  const reachable = server.reachability.state === 'ok'
   return (
-    <div className={`project-group ${selected ? 'selected' : ''}`}>
-      <div className="group-head">
+    <div
+      className={deviceClasses('device host-card', data, reachable ? 'ok' : 'disconnected')}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <div className="device-label">
+        <div className="device-name host-name">
+          <strong>{server.id}</strong>
+        </div>
+        <div className="device-address">서버 · 가동 {formatUptime(server.uptime_seconds)}</div>
+        {!reachable && <div className="device-state">{server.reachability.label}</div>}
+        <div className="device-metrics">
+          CPU {metric('host.cpu.percent', formatPercent)} · MEM {metric('host.mem.percent', formatPercent)}
+        </div>
+        <div className="device-metrics">
+          DISK {metric('host.disk.percent', formatPercent)} ·{' '}
+          {temperature?.state === 'unsupported' ? (
+            <span className="muted">
+              <UnsupportedIcon /> 온도 미지원
+            </span>
+          ) : (
+            <>온도 {metric('host.temperature', (v) => `${v.toFixed(0)}°C`)}</>
+          )}
+        </div>
+      </div>
+      <HostIcon />
+    </div>
+  )
+})
+
+type SwitchData = DeviceFlags & { network: Network }
+
+const SwitchNode = memo(function SwitchNode({ data }: NodeProps<Node<SwitchData, 'switch'>>) {
+  const { network } = data
+  return (
+    <div
+      className={deviceClasses('device switch-card', data)}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <SwitchIcon />
+      <div className="device-label">
+        <div className="device-name network-name">{network.name}</div>
+        <div className="device-address">{network.subnet ?? '서브넷 없음'}</div>
+      </div>
+    </div>
+  )
+})
+
+type InternetData = DeviceFlags
+
+const InternetNode = memo(function InternetNode({ data }: NodeProps<Node<InternetData, 'internet'>>) {
+  return (
+    <div
+      className={deviceClasses('device internet-card', data)}
+      style={{ '--enter-delay': `${data.enterDelay}ms` } as React.CSSProperties}
+    >
+      <Handles />
+      <CloudIcon />
+      <div className="device-label">
+        <div className="device-name network-name">외부</div>
+        <div className="device-address small-note" title="공개 포트 바인딩 기준입니다. 실제 도달 여부는 외부 응답 확인으로 알 수 있습니다">공개 포트 기준</div>
+      </div>
+    </div>
+  )
+})
+
+type PlateData = { plate: ScenePlate; project: Project; selected: boolean; collapsed: boolean; onToggle: () => void; origin: Point }
+
+// 프로젝트 판은 시각적 묶음이다. 머리글만 클릭을 받고 나머지는 뒤의 장비와 화면 이동을 막지 않는다.
+const PlateNode = memo(function PlateNode({ data }: NodeProps<Node<PlateData, 'plate'>>) {
+  const { plate, project, selected, collapsed, onToggle, origin } = data
+  const points = plate.corners.map((corner) => `${corner.x - origin.x},${corner.y - origin.y}`).join(' ')
+  // 머리글은 판의 위 꼭짓점 위에 둔다. 옆 프로젝트의 라벨과 겹치지 않는 자리다.
+  const apex = plate.corners[1]
+  return (
+    <div className={`project-plate ${selected ? 'selected' : ''}`}>
+      <svg className="plate-shape" aria-hidden="true">
+        <polygon points={points} />
+      </svg>
+      <div className="plate-head" style={{ left: apex.x - origin.x, top: apex.y - origin.y - 4 }}>
         <button
           type="button"
           className="icon-button nodrag"
@@ -158,8 +263,9 @@ const GroupNode = memo(function GroupNode({ data }: NodeProps<Node<GroupData, 'p
         </button>
         <strong>{projectLabel(project.key)}</strong>
         <span className="muted mono">{project.services.length}</span>
+        {plate.hiddenJobs > 0 && <span className="muted hidden-jobs" title="끝난 일회성 작업은 그림에서 숨기고 왼쪽 목록에 표시합니다">+{plate.hiddenJobs} 작업</span>}
         <span className={`badge ${project.status}`}>
-          <StatusIcon status={project.status} size={12} />
+          <StatusIcon status={project.status} size={11} />
           {STATUS_LABEL[project.status]}
         </span>
       </div>
@@ -167,40 +273,95 @@ const GroupNode = memo(function GroupNode({ data }: NodeProps<Node<GroupData, 'p
   )
 })
 
-type NetworkData = { name: string; subnet?: string; count: number; selected: boolean; rail: boolean }
+type CalloutData = { activity: Activity }
 
-const NetworkNode = memo(function NetworkNode({ data }: NodeProps<Node<NetworkData, 'network'>>) {
+// 설명 카드는 실제로 일어난 일에만 붙는다.
+const CalloutNode = memo(function CalloutNode({ data }: NodeProps<Node<CalloutData, 'callout'>>) {
+  const { activity } = data
   return (
-    <div className={`network-node ${data.rail ? 'rail' : 'band'} ${data.selected ? 'selected' : ''}`}>
-      <Handle type="source" position={Position.Bottom} className="hidden-handle" />
-      <IsoNetwork size={14} />
-      <span className="mono ellipsis">{data.name}</span>
-      {data.rail && data.subnet && <span className="mono muted ellipsis">{data.subnet}</span>}
-      <span className="muted network-note">{data.rail ? `소속 ${data.count}개, 호출 관계 아님` : `소속 ${data.count}개`}</span>
+    <div className={`callout ${activity.tone}`} role="status">
+      <Handles />
+      <div className="callout-title">{activity.title}</div>
+      {activity.lines.map((line) => (
+        <div key={line} className="callout-line">{line}</div>
+      ))}
     </div>
   )
 })
 
-const nodeTypes = { service: ServiceNode, host: HostNode, project: GroupNode, network: NetworkNode }
+const nodeTypes = {
+  service: ServiceNode,
+  host: HostNode,
+  switch: SwitchNode,
+  internet: InternetNode,
+  plate: PlateNode,
+  callout: CalloutNode,
+}
 
-// 레이어 도구와 범례가 노드를 가리지 않도록 위아래를 비운다.
-const FIT_PADDING = { top: '56px', bottom: '48px', left: '16px', right: '16px' } as const
+type LinkData = {
+  d: string
+  label?: string
+  labelAt?: Point
+  marker?: string
+  entering?: boolean
+  enterDelay?: number
+  dot?: boolean
+}
 
-function FitButton() {
-  const { fitView } = useReactFlow()
+// IsoEdge는 축을 따라 미리 계산한 경로를 그린다. 새로 생긴 선은 앞에서부터 한 번 그려진다.
+function IsoEdge({ id, data }: EdgeProps<Edge<LinkData, 'iso'>>) {
+  const { d, label, labelAt, marker, entering, enterDelay, dot } = data!
+  const maskID = `draw-${id.replace(/[^a-zA-Z0-9]/g, '-')}`
   return (
-    <button type="button" className="tool-button" onClick={() => fitView({ padding: FIT_PADDING, duration: 150 })}>
-      맞춤
-    </button>
+    <g>
+      {entering && (
+        <mask id={maskID} maskUnits="userSpaceOnUse" x="-6000" y="-6000" width="12000" height="12000">
+          <path d={d} className="draw-mask" pathLength={1} style={{ animationDelay: `${enterDelay ?? 0}ms` }} />
+        </mask>
+      )}
+      <path
+        d={d}
+        className="react-flow__edge-path"
+        fill="none"
+        mask={entering ? `url(#${maskID})` : undefined}
+        markerEnd={marker ? `url(#${marker})` : undefined}
+      />
+      {dot && (
+        <circle className="activity-dot" r="5">
+          <animateMotion dur="1.3s" path={d} fill="freeze" />
+        </circle>
+      )}
+      {label && labelAt && (
+        <text className="edge-label" x={labelAt.x} y={labelAt.y - 8} textAnchor="middle">
+          {label}
+        </text>
+      )}
+    </g>
   )
 }
 
-function FocusOnTarget({ nodeID, enabled }: { nodeID?: string; enabled: boolean }) {
-  const { fitView } = useReactFlow()
-  useEffect(() => {
-    if (enabled && nodeID) fitView({ nodes: [{ id: nodeID }], maxZoom: 1, padding: 1.2, duration: 200 })
-  }, [enabled, nodeID, fitView])
-  return null
+const edgeTypes = { iso: IsoEdge }
+
+// IsoGrid는 장비와 함께 움직이는 등각 격자다.
+function IsoGrid() {
+  const { x, y, zoom } = useViewport()
+  return (
+    <svg className="iso-grid" aria-hidden="true">
+      <defs>
+        <pattern id="iso-grid-tile" width={CELL_X} height={CELL_Y} patternUnits="userSpaceOnUse" patternTransform={`translate(${x} ${y}) scale(${zoom})`}>
+          <path d={`M0 0L${CELL_X} ${CELL_Y}M0 ${CELL_Y}L${CELL_X} 0`} />
+        </pattern>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#iso-grid-tile)" />
+    </svg>
+  )
+}
+
+const LINK_MARKER: Record<string, string | undefined> = {
+  external: 'iso-arrow',
+  publish: 'iso-arrow',
+  loopback: 'iso-arrow-muted',
+  declared: 'iso-arrow-muted',
 }
 
 interface MapProps {
@@ -209,15 +370,17 @@ interface MapProps {
   target?: string
   highlight: MapHighlight
   now: number
-  focusNode?: string
+  live: boolean
+  selectedEvent?: EventRow
 }
 
-function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapProps) {
+function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent }: MapProps) {
+  const { fitView } = useReactFlow()
   const slotKey = `msp.slots.${server.mode}.${server.id}`
   const collapseKey = `msp.collapsed.${server.mode}.${server.id}`
   const [slots, setSlots] = useState<SlotMemory>(() => loadJSON(slotKey, emptySlots()))
   const [collapsed, setCollapsed] = useState<string[]>(() => loadJSON(collapseKey, []))
-  const [layers, setLayers] = useState<Layers>({ ports: true, networks: false, declared: false })
+  const [layers, setLayers] = useState<Layers>({ ports: true, networks: true, declared: false, activity: true })
 
   const currentSlots = useMemo(() => assignSlots(slots, topology), [slots, topology])
   useEffect(() => {
@@ -228,7 +391,7 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
   }, [currentSlots, slots, slotKey])
 
   const collapsedSet = useMemo(() => new Set(collapsed), [collapsed])
-  const layout = useMemo(() => computeLayout(topology, currentSlots, collapsedSet), [topology, currentSlots, collapsedSet])
+  const scene = useMemo(() => computeScene(topology, currentSlots, collapsedSet), [topology, currentSlots, collapsedSet])
 
   const toggleCollapsed = (key: string) => {
     const next = collapsedSet.has(key) ? collapsed.filter((item) => item !== key) : [...collapsed, key]
@@ -236,11 +399,67 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
     window.localStorage.setItem(collapseKey, JSON.stringify(next))
   }
 
+  const userMoved = useRef(false)
+  const fitAll = () => fitView({ padding: FIT_PADDING, duration: 450 })
+
   const reset = () => {
     const fresh = assignSlots(emptySlots(), topology)
     setSlots(fresh)
     window.localStorage.setItem(slotKey, JSON.stringify(fresh))
+    userMoved.current = false
+    window.setTimeout(fitAll, 60)
   }
+
+  // 새로 나타난 장비와 선을 찾아 한 번만 그리는 효과를 준다. 사용자가 화면을 옮기지 않았다면 전체가 보이게 맞춘다.
+  const seen = useRef<Set<string> | null>(null)
+  const [entering, setEntering] = useState<ReadonlySet<string>>(new Set())
+  const firstDraw = useRef(true)
+  const sceneKey = useMemo(
+    () => [...scene.devices.map((device) => device.id), ...scene.links.map((link) => link.id)].sort().join('|'),
+    [scene],
+  )
+  useEffect(() => {
+    const ids = sceneKey.split('|')
+    const isFirst = seen.current === null
+    const known: Set<string> = seen.current ?? new Set<string>()
+    const fresh = ids.filter((id) => !known.has(id))
+    seen.current = new Set([...known, ...ids])
+    if (fresh.length === 0) return
+    setEntering(new Set(fresh))
+    firstDraw.current = isFirst
+    const newDevice = fresh.some((id) => scene.positions[id])
+    const fit = !isFirst && newDevice && !userMoved.current ? window.setTimeout(fitAll, 60) : undefined
+    const clear = window.setTimeout(() => setEntering(new Set()), ENTER_ANIMATION_MS)
+    return () => {
+      window.clearTimeout(clear)
+      if (fit) window.clearTimeout(fit)
+    }
+    // 장비와 선 목록이 바뀔 때만 실행한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sceneKey])
+
+  // 구조 데이터가 갱신될 때 실제로 일어난 변화를 찾아 그린다.
+  const previousTopology = useRef<Topology | null>(null)
+  const [activities, setActivities] = useState<Activity[]>([])
+  useEffect(() => {
+    if (live && previousTopology.current) {
+      const fresh = diffActivities(previousTopology.current, topology, Date.now())
+      if (fresh.length > 0) setActivities((current) => [...current, ...fresh])
+    }
+    previousTopology.current = topology
+  }, [topology, live])
+  useEffect(() => {
+    setActivities((current) => {
+      const alive = current.filter((activity) => activity.until > Date.now())
+      return alive.length === current.length ? current : alive
+    })
+  }, [now])
+
+  const selectedActivity = useMemo(() => (selectedEvent ? eventActivity(selectedEvent) : undefined), [selectedEvent])
+  const shown = useMemo(() => {
+    const list = layers.activity ? activities : []
+    return selectedActivity ? [selectedActivity, ...list] : list
+  }, [activities, selectedActivity, layers.activity])
 
   const selectedNetwork = target?.startsWith('net:') ? target.slice(4) : undefined
   // 네트워크를 선택하면 소속 서비스를 강조한다. 소속만 뜻하고 호출 관계는 뜻하지 않는다.
@@ -248,114 +467,147 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
     const members = topology.networks.find((network) => network.name === selectedNetwork)?.members ?? []
     return new Set([...highlight.nodes, ...members.map((member) => `svc:${member}`)])
   }, [highlight.nodes, selectedNetwork, topology.networks])
-  const hasHighlight = highlightedNodes.size > 0
+  const hasFocus = highlightedNodes.size > 0
 
   const nodes = useMemo(() => {
     const result: Node[] = []
-    const place = (id: string, type: string, box: { x: number; y: number; width: number; height: number }, data: Record<string, unknown>, zIndex: number) => {
+    const flags = (device: SceneDevice): DeviceFlags => {
+      const highlighted = highlightedNodes.has(device.id)
+      return {
+        selected: target === device.id,
+        highlighted,
+        dimmed: hasFocus && device.kind === 'service' && !highlighted && target !== device.id,
+        entering: entering.has(device.id),
+        enterDelay: firstDraw.current ? device.stage * STAGE_DELAY_MS : 0,
+      }
+    }
+
+    for (const plate of scene.plates) {
+      const project = topology.projects.find((item) => item.key === plate.projectKey)
+      if (!project) continue
+      const xs = plate.corners.map((corner) => corner.x)
+      const ys = plate.corners.map((corner) => corner.y)
+      const origin = { x: Math.min(...xs), y: Math.min(...ys) }
       result.push({
-        id,
-        type,
-        data,
-        position: { x: box.x, y: box.y },
+        id: plate.id,
+        type: 'plate',
+        position: origin,
+        width: Math.max(...xs) - origin.x,
+        height: Math.max(...ys) - origin.y,
+        draggable: false,
+        connectable: false,
+        selectable: false,
+        zIndex: 0,
+        data: {
+          plate,
+          project,
+          origin,
+          selected: target === plate.id,
+          collapsed: collapsedSet.has(plate.projectKey),
+          onToggle: () => toggleCollapsed(plate.projectKey),
+        },
+      })
+    }
+
+    for (const device of scene.devices) {
+      const box = DEVICE_BOX[device.kind]
+      const data: Record<string, unknown> = { ...flags(device) }
+      if (device.kind === 'service') Object.assign(data, { service: device.service, now })
+      if (device.kind === 'host') Object.assign(data, { server, now })
+      if (device.kind === 'switch') Object.assign(data, { network: device.network })
+      result.push({
+        id: device.id,
+        type: device.kind,
+        position: { x: device.point.x - box.anchorX, y: device.point.y - box.anchorY },
         width: box.width,
         height: box.height,
         draggable: false,
         connectable: false,
-        zIndex,
+        zIndex: 2,
+        data,
       })
     }
-    place('host', 'host', layout.host, { server, selected: target === 'host', now }, 2)
 
-    for (const network of topology.networks) {
-      const id = `net:${network.name}`
-      const data = { name: network.name, subnet: network.subnet, count: network.members.length, selected: target === id }
-      if (layout.rails[network.name]) place(id, 'network', layout.rails[network.name], { ...data, rail: true }, 1)
-      else if (layout.bands[network.name]) place(id, 'network', layout.bands[network.name], { ...data, rail: false }, 2)
-    }
-
-    for (const project of topology.projects) {
-      const box = layout.groups[project.key]
-      if (!box) continue
-      const id = `project:${project.key}`
-      place(id, 'project', box, {
-        project,
-        selected: target === id,
-        collapsed: collapsedSet.has(project.key),
-        onToggle: () => toggleCollapsed(project.key),
-      }, 0)
-      for (const service of project.services) {
-        const serviceBox = layout.services[service.key]
-        if (!serviceBox) continue
-        const serviceID = `svc:${service.key}`
-        const highlighted = highlightedNodes.has(serviceID)
-        place(serviceID, 'service', serviceBox, {
-          service,
-          now,
-          selected: target === serviceID,
-          highlighted,
-          dimmed: hasHighlight && !highlighted && target !== serviceID,
-        }, 2)
-      }
+    for (const activity of mergeCallouts(shown).slice(0, MAX_CALLOUTS)) {
+      const device = scene.devices.find((item) => item.id === activity.to)
+      if (!device) continue
+      result.push({
+        id: `callout:${activity.id}`,
+        type: 'callout',
+        position: { x: device.point.x + CALLOUT.offsetX, y: device.point.y - CALLOUT.offsetY },
+        width: CALLOUT.width,
+        height: CALLOUT.height,
+        draggable: false,
+        connectable: false,
+        selectable: false,
+        zIndex: 5,
+        data: { activity },
+      })
     }
     return result
     // toggleCollapsed는 collapsed에서 파생된다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [topology, layout, server, target, now, highlightedNodes, hasHighlight, collapsedSet])
+  }, [scene, topology, server, target, now, highlightedNodes, hasFocus, collapsedSet, entering, shown])
 
   const edges = useMemo(() => {
     const result: Edge[] = []
-    const visible = (key: string) => Boolean(layout.services[key])
-    for (const relation of topology.relations) {
-      if (relation.type === 'publishes' && layers.ports && visible(relation.to)) {
-        const loopback = relation.detail?.startsWith('127.') || relation.detail?.startsWith('::1')
-        result.push({
-          id: `publish:${relation.to}:${relation.detail}`,
-          source: 'host',
-          target: `svc:${relation.to}`,
-          targetHandle: 'left',
-          type: 'smoothstep',
-          className: loopback ? 'edge-publish-loopback' : 'edge-publish',
-          selectable: false,
-        })
-      }
-      if (relation.type === 'declared_depends_on' && layers.declared && visible(relation.from) && visible(relation.to)) {
-        result.push({
-          id: `declared:${relation.from}:${relation.to}`,
-          source: `svc:${relation.from}`,
-          sourceHandle: 'right-out',
-          target: `svc:${relation.to}`,
-          targetHandle: 'right-in',
-          type: 'smoothstep',
-          className: 'edge-declared',
-          label: '선언',
-          selectable: false,
-          markerEnd: 'declared-arrow',
-        })
-      }
-      if (relation.type === 'member_of' && visible(relation.from)) {
-        const network = relation.to.slice('network:'.length)
-        if ((layers.networks || selectedNetwork === network) && layout.rails[network]) {
-          result.push({
-            id: `member:${relation.from}:${network}`,
-            source: relation.to.replace('network:', 'net:'),
-            target: `svc:${relation.from}`,
-            targetHandle: 'left',
-            type: 'smoothstep',
-            className: 'edge-member',
-            selectable: false,
-          })
-        }
-      }
+    const focusIDs = new Set(highlightedNodes)
+    if (target) focusIDs.add(target)
+    const anyFocus = focusIDs.size > 0
+
+    for (const link of scene.links) {
+      const portLink = link.kind === 'external' || link.kind === 'publish' || link.kind === 'loopback'
+      if (portLink && !layers.ports) continue
+      if (link.kind === 'declared' && !layers.declared) continue
+      if (link.kind === 'member' && !layers.networks && link.from !== target && link.to !== target) continue
+      const lit = focusIDs.has(link.from) || focusIDs.has(link.to)
+      const isEntering = entering.has(link.id)
+      result.push({
+        id: link.id,
+        type: 'iso',
+        source: link.from,
+        target: link.to,
+        className: [`edge-${link.kind}`, lit && 'lit', anyFocus && !lit && 'faded'].filter(Boolean).join(' '),
+        selectable: false,
+        focusable: false,
+        data: {
+          d: link.d,
+          label: link.label,
+          labelAt: link.labelAt,
+          marker: LINK_MARKER[link.kind],
+          entering: isEntering,
+          enterDelay: firstDraw.current ? link.stage * STAGE_DELAY_MS + 120 : 0,
+        },
+      })
+    }
+
+    const drawn = new Set<string>()
+    for (const activity of shown) {
+      if (!activity.from || drawn.has(activity.id)) continue
+      const d = routeBetween(scene, activity.from, activity.to)
+      if (!d) continue
+      drawn.add(activity.id)
+      result.push({
+        id: `activity:${activity.id}`,
+        type: 'iso',
+        source: activity.from,
+        target: activity.to,
+        className: `edge-activity ${activity.tone}`,
+        selectable: false,
+        focusable: false,
+        zIndex: 4,
+        data: { d, marker: activity.tone === 'fail' ? 'iso-arrow-fail' : 'iso-arrow-active', dot: true },
+      })
     }
     return result
-  }, [topology, layout, layers, selectedNetwork])
+  }, [scene, layers, target, highlightedNodes, entering, shown])
 
   return (
     <ReactFlow
       nodes={nodes}
       edges={edges}
       nodeTypes={nodeTypes}
+      edgeTypes={edgeTypes}
       nodesDraggable={false}
       nodesConnectable={false}
       edgesFocusable={false}
@@ -363,38 +615,57 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
       maxZoom={1.6}
       fitView
       fitViewOptions={{ padding: FIT_PADDING }}
-      onNodeClick={(_, node) => updateContext({ target: node.id, event: undefined })}
+      onMoveStart={(event) => {
+        if (event) userMoved.current = true
+      }}
+      onNodeClick={(_, node) => {
+        if (node.type !== 'internet' && node.type !== 'callout') updateContext({ target: node.id, event: undefined })
+      }}
       onPaneClick={() => updateContext({ target: undefined, event: undefined })}
     >
-      <FocusOnTarget nodeID={focusNode} enabled={Boolean(focusNode)} />
+      <IsoGrid />
       <Panel position="top-left" className="map-tools">
-        <span className="tool-title">레이어</span>
+        <span className="tool-title">표시</span>
         <label>
           <input type="checkbox" checked={layers.ports} onChange={(e) => setLayers({ ...layers, ports: e.target.checked })} />
           공개 포트
         </label>
         <label>
           <input type="checkbox" checked={layers.networks} onChange={(e) => setLayers({ ...layers, networks: e.target.checked })} />
-          네트워크 소속선
+          네트워크 소속
         </label>
         <label>
           <input type="checkbox" checked={layers.declared} onChange={(e) => setLayers({ ...layers, declared: e.target.checked })} />
           선언 의존
         </label>
+        <label title="응답 확인이 실행될 때 그 경로를 잠깐 그립니다">
+          <input type="checkbox" checked={layers.activity} onChange={(e) => setLayers({ ...layers, activity: e.target.checked })} />
+          응답 확인
+        </label>
         <label className="disabled" title="요청 추적이 연동되지 않아 실제 호출 관계를 알 수 없습니다">
           <input type="checkbox" disabled />
           관측 요청 (미연동)
         </label>
-        <FitButton />
-        <button type="button" className="tool-button" onClick={reset} title="새 항목으로 비워진 자리를 정리합니다. 이때만 노드 위치가 바뀝니다">
+        <button
+          type="button"
+          className="tool-button"
+          onClick={() => {
+            userMoved.current = false
+            fitAll()
+          }}
+        >
+          맞춤
+        </button>
+        <button type="button" className="tool-button" onClick={reset} title="비워진 자리를 정리합니다. 이때만 장비 위치가 바뀝니다">
           재정렬
         </button>
       </Panel>
       <Panel position="bottom-left" className="map-legend">
-        <span><i className="line publish" />공개 포트 바인딩</span>
+        <span><i className="line publish" />공개 포트</span>
         <span><i className="line loopback" />루프백 바인딩</span>
         <span><i className="line member" />네트워크 소속 (호출 아님)</span>
         <span><i className="line declared" />선언 의존 (호출 미확인)</span>
+        <span><i className="line activity" />실제 응답 확인</span>
       </Panel>
       {highlight.note && (
         <Panel position="top-right" className="map-note">
@@ -403,9 +674,16 @@ function MapCanvas({ server, topology, target, highlight, now, focusNode }: MapP
       )}
       <svg className="marker-defs" aria-hidden="true">
         <defs>
-          <marker id="declared-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-            <path d="M0 0L10 5L0 10z" className="marker-declared" />
-          </marker>
+          {[
+            ['iso-arrow', 'marker-main'],
+            ['iso-arrow-muted', 'marker-muted'],
+            ['iso-arrow-active', 'marker-active'],
+            ['iso-arrow-fail', 'marker-fail'],
+          ].map(([id, className]) => (
+            <marker key={id} id={id} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse" markerUnits="userSpaceOnUse">
+              <path d="M0 0L10 5L0 10z" className={className} />
+            </marker>
+          ))}
         </defs>
       </svg>
     </ReactFlow>

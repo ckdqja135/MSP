@@ -267,7 +267,7 @@ p {
   min-height: 0;
   display: grid;
   grid-template-columns: 216px minmax(0, 1fr) 304px;
-  grid-template-rows: minmax(0, 1fr) minmax(190px, 34%);
+  grid-template-rows: minmax(0, 1fr) minmax(190px, 31%);
   gap: 8px;
   padding: 8px;
 }
@@ -365,13 +365,25 @@ p {
 .tree-status.stopped { color: var(--stopped); }
 .tree-status.disconnected { color: var(--disconnected); }
 
-/* 구조맵: 아이콘에 맞춘 옅은 등각 격자 */
+/* 구조맵 */
 .map-surface {
   position: relative;
   background-color: var(--bg);
-  background-image:
-    repeating-linear-gradient(30deg, var(--line-faint) 0 1px, transparent 1px 34px),
-    repeating-linear-gradient(150deg, var(--line-faint) 0 1px, transparent 1px 34px);
+}
+
+.iso-grid {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: -1;
+  pointer-events: none;
+}
+
+.iso-grid path {
+  stroke: #e7ecf8;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
 }
 
 .react-flow,
@@ -398,80 +410,6 @@ p {
   cursor: pointer;
 }
 
-.service-card,
-.host-card,
-.project-group,
-.network-node {
-  width: 100%;
-  height: 100%;
-}
-
-.service-card {
-  background: var(--panel);
-  border: 1px solid var(--line);
-  border-left-width: 4px;
-  border-radius: 3px;
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.service-card.ok { border-left-color: var(--ok); }
-.service-card.warning { border-color: var(--warning); background: var(--warning-tint); }
-.service-card.critical { border-color: var(--critical); background: var(--critical-tint); }
-.service-card.stopped { border-color: var(--line-soft); border-left-color: var(--stopped); background: #fafbfd; }
-.service-card.disconnected {
-  border-color: var(--disconnected);
-  background: repeating-linear-gradient(135deg, #f4f5f9 0 6px, #e9ebf2 6px 12px);
-}
-
-.service-card.selected,
-.host-card.selected,
-.project-group.selected,
-.network-node.selected {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-.service-card.highlighted {
-  outline: 2px dashed var(--accent);
-  outline-offset: 2px;
-}
-
-.service-card.dimmed {
-  opacity: 0.42;
-}
-
-.card-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.card-title {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 13.5px;
-}
-
-.card-line {
-  font-size: 11.5px;
-  white-space: nowrap;
-}
-
-.card-line.mono {
-  font-size: 11px;
-}
-
-.stale {
-  color: var(--ink-soft);
-  font-style: italic;
-}
-
 .iso path {
   stroke: var(--line);
   stroke-width: 1.1;
@@ -483,56 +421,262 @@ p {
 .iso-right { fill: #b9c9f1; }
 .iso-mark { fill: none; }
 .logo-right { fill: var(--accent); }
-.iso-stopped path { stroke: var(--stopped); }
-.iso-stopped .iso-top, .iso-stopped .iso-right, .iso-stopped .iso-left { fill: none; }
 
-.host-card {
+/* 장비: 바닥 그림자 위에 등각 아이콘을 두고 옆에 이름과 주소를 적는다 */
+.device {
+  --iso-stroke: var(--line);
+  --iso-top: #e4ebfc;
+  --iso-left: #ffffff;
+  --iso-right: #c4d2f3;
+  --iso-accent: #9db3ea;
+  position: relative;
   display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 14px;
-  background: var(--panel);
-  border: 1.5px solid var(--line);
+  align-items: flex-start;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+}
+
+.device.critical {
+  --iso-stroke: var(--critical);
+  --iso-top: #fbdcd9;
+  --iso-left: #fff5f4;
+  --iso-right: #f3b9b4;
+  --iso-accent: #e88a83;
+}
+
+.device.warning {
+  --iso-stroke: var(--warning);
+  --iso-top: #fbeac8;
+  --iso-left: #fffaf0;
+  --iso-right: #f0d398;
+  --iso-accent: #d9ae5c;
+}
+
+.device.stopped {
+  --iso-stroke: var(--stopped);
+  --iso-top: #f1f3f8;
+  --iso-left: #fbfcfe;
+  --iso-right: #dfe3ed;
+  --iso-accent: #c5cbd9;
+}
+
+.device.disconnected {
+  --iso-stroke: var(--disconnected);
+  --iso-top: #e6e8ef;
+  --iso-left: #f3f4f8;
+  --iso-right: #d3d7e2;
+  --iso-accent: #b4bac9;
+}
+
+.iso-device {
+  flex: none;
+  overflow: visible;
+}
+
+.iso-device path,
+.iso-device rect,
+.iso-device ellipse,
+.iso-device circle {
+  stroke: var(--iso-stroke);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+}
+
+.iso-device .iso-top { fill: var(--iso-top); }
+.iso-device .iso-left { fill: var(--iso-left); }
+.iso-device .iso-right { fill: var(--iso-right); }
+.iso-device .iso-fill { fill: var(--iso-accent); stroke-width: 1.1; }
+.iso-device .iso-line { fill: none; stroke-width: 1.2; }
+.iso-device .iso-rack { fill: var(--iso-top); stroke-width: 1.2; }
+.iso-device .iso-port { fill: var(--iso-accent); stroke-width: 0.8; }
+.iso-device .iso-led { fill: var(--iso-stroke); stroke: none; }
+.iso-device .iso-globe { fill: #ffffff; stroke-width: 1.5; }
+.iso-device path.iso-globe { fill: none; }
+.iso-device .iso-mark-solid { fill: var(--iso-stroke); stroke: none; }
+.iso-device .iso-shadow { fill: rgb(90 110 170 / 0.13); stroke: none; }
+
+.device.stopped .iso-device .iso-left,
+.device.stopped .iso-device .iso-right,
+.device.stopped .iso-device .iso-top {
+  stroke-dasharray: 3 2;
+}
+
+.device-label {
+  min-width: 0;
+  padding: 1px 5px;
   border-radius: 3px;
-}
-
-.host-name {
-  display: flex;
-  flex-direction: column;
-}
-
-.host-name strong {
-  font-family: var(--mono);
-  font-size: 15px;
-}
-
-.host-metrics {
-  margin-left: auto;
-  display: flex;
-  gap: 16px;
-  font-size: 12px;
+  background: rgb(251 252 254 / 0.84);
+  line-height: 1.25;
   white-space: nowrap;
 }
 
-.project-group {
-  border: 1px dashed var(--line);
-  border-radius: 4px;
-  background: rgb(255 255 255 / 0.55);
-}
-
-.project-group.selected {
-  border-style: solid;
-}
-
-.group-head {
+.device-name {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 8px 12px;
+  font-family: var(--mono);
+  font-size: 17px;
+  color: var(--ink);
 }
 
-.group-head .badge {
-  margin-left: auto;
+.device-name .badge {
+  font-family: var(--sans);
+  font-size: 12px;
+  padding: 0 4px;
+}
+
+.host-name {
+  font-size: 20px;
+}
+
+.host-card {
+  flex-direction: column;
+  gap: 2px;
+}
+
+.network-name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.device-address {
+  font-family: var(--mono);
+  font-size: 14px;
+  color: var(--line);
+}
+
+.device-address.small-note {
+  font-family: var(--sans);
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.device-state {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.service-card.critical .device-state { color: var(--critical); }
+.service-card.warning .device-state { color: var(--warning); }
+.service-card.stopped .device-state { color: var(--stopped); font-weight: 400; }
+.device.disconnected .device-state { color: var(--disconnected); }
+
+.device-metrics {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--ink-soft);
+}
+
+.device-ports {
+  font-size: 12.5px;
+  color: var(--ink-soft);
+}
+
+.stale {
+  color: var(--ink-soft);
+  font-style: italic;
+}
+
+.device.selected .device-label {
+  outline: 2px solid var(--accent);
+  background: var(--accent-tint);
+}
+
+.device.selected .iso-device {
+  filter: drop-shadow(0 0 3px rgb(31 79 216 / 0.55));
+}
+
+.device.highlighted .device-label {
+  outline: 2px dashed var(--accent);
+}
+
+.device.dimmed {
+  opacity: 0.32;
+}
+
+/* 새로 나타난 장비와 선은 한 번만 그려진다. 관측된 구성 변화에만 쓰인다. */
+.device.entering {
+  animation: device-in 420ms cubic-bezier(0.2, 0.8, 0.3, 1.1) both;
+  animation-delay: var(--enter-delay, 0ms);
+}
+
+@keyframes device-in {
+  from {
+    opacity: 0;
+    transform: translateY(-14px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.draw-mask {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 14;
+  stroke-dasharray: 1;
+  stroke-dashoffset: 0;
+  animation: line-draw 620ms ease-out both;
+}
+
+@keyframes line-draw {
+  from { stroke-dashoffset: 1; }
+  to { stroke-dashoffset: 0; }
+}
+
+/* 프로젝트 판 */
+.react-flow__node-plate {
+  pointer-events: none !important;
+}
+
+.project-plate {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.plate-shape {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.plate-shape polygon {
+  fill: rgb(235 240 252 / 0.42);
+  stroke: #b9c7ec;
+  stroke-width: 1;
+  stroke-dasharray: 5 4;
+}
+
+.project-plate.selected .plate-shape polygon {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: none;
+  fill: rgb(232 238 253 / 0.8);
+}
+
+.plate-head {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1px 7px 1px 2px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.hidden-jobs {
+  font-size: 11px;
 }
 
 .icon-button {
@@ -543,36 +687,90 @@ p {
   line-height: 1;
 }
 
-.network-node {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 8px;
-  font-size: 11.5px;
+/* 연결선: 평소에는 옅은 점선, 실제로 일어난 연결만 진하게 그린다 */
+.react-flow__edge.edge-member path.react-flow__edge-path { stroke: #a9bbe8; stroke-width: 1.3; stroke-dasharray: 2 4; }
+.react-flow__edge.edge-publish path.react-flow__edge-path,
+.react-flow__edge.edge-external path.react-flow__edge-path { stroke: #7f98dd; stroke-width: 1.6; stroke-dasharray: 7 5; }
+.react-flow__edge.edge-loopback path.react-flow__edge-path { stroke: #a5adc4; stroke-width: 1.4; stroke-dasharray: 4 5; }
+.react-flow__edge.edge-declared path.react-flow__edge-path { stroke: var(--ink-soft); stroke-width: 1.3; stroke-dasharray: 3 3; }
+.react-flow__edge.lit path.react-flow__edge-path { stroke: var(--accent); stroke-width: 2; }
+.react-flow__edge.faded path.react-flow__edge-path { opacity: 0.28; }
+
+.react-flow__edge.edge-activity path.react-flow__edge-path {
+  stroke-width: 2.4;
+  stroke-dasharray: 8 5;
+}
+
+.react-flow__edge.edge-activity.ok path.react-flow__edge-path,
+.react-flow__edge.edge-activity.info path.react-flow__edge-path { stroke: #e89a10; }
+.react-flow__edge.edge-activity.fail path.react-flow__edge-path { stroke: var(--critical); }
+
+.activity-dot { fill: #e89a10; stroke: #fff; stroke-width: 1.5; }
+.edge-activity.fail .activity-dot { fill: var(--critical); }
+
+.edge-label {
+  font-family: var(--mono);
+  font-size: 13.5px;
+  fill: var(--line);
+  paint-order: stroke;
+  stroke: var(--bg);
+  stroke-width: 4;
+}
+
+.marker-main { fill: #7f98dd; }
+.marker-muted { fill: #8d96b0; }
+.marker-active { fill: #e89a10; }
+.marker-fail { fill: var(--critical); }
+
+/* 설명 카드 */
+.callout {
+  width: 100%;
+  border: 1.5px solid #e89a10;
+  border-radius: 3px;
+  background: #fff;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgb(40 60 120 / 0.14);
+  animation: device-in 240ms ease-out both;
+  pointer-events: none;
+}
+
+.callout-title {
+  background: #f2a51a;
+  color: #fff;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 14px;
+  padding: 2px 8px;
   white-space: nowrap;
   overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.network-node.rail {
-  background: var(--accent-tint);
-  border: 1px solid var(--line);
-  border-radius: 13px;
+.callout-line {
+  padding: 1px 8px;
+  font-size: 13px;
+  overflow-wrap: anywhere;
 }
 
-.network-node.band {
-  border-top: 1px dotted var(--line);
-  padding: 0 2px;
+.callout.fail {
+  border-color: var(--critical);
 }
 
-.network-note {
-  margin-left: auto;
-  font-size: 11px;
+.callout.fail .callout-title {
+  background: var(--critical);
 }
 
-.react-flow__edge.edge-publish path { stroke: var(--line); stroke-width: 1.4; }
-.react-flow__edge.edge-publish-loopback path { stroke: var(--ink-soft); stroke-width: 1.2; stroke-dasharray: 6 3; }
-.react-flow__edge.edge-member path { stroke: var(--line); stroke-width: 1; stroke-dasharray: 1.5 3; }
-.react-flow__edge.edge-declared path { stroke: var(--ink-soft); stroke-width: 1.2; stroke-dasharray: 5 3; }
+.callout.info {
+  border-color: var(--accent);
+}
+
+.callout.info .callout-title {
+  background: var(--accent);
+}
+
+.react-flow__node-callout {
+  pointer-events: none !important;
+}
 
 .map-tools,
 .map-legend,
@@ -646,9 +844,11 @@ p {
   border-top: 1.5px solid var(--line);
 }
 
-.line.loopback { border-top: 1.5px dashed var(--ink-soft); }
-.line.member { border-top: 1.5px dotted var(--line); }
+.line.publish { border-top: 1.6px dashed #7f98dd; }
+.line.loopback { border-top: 1.5px dashed #a5adc4; }
+.line.member { border-top: 1.5px dotted #a9bbe8; }
 .line.declared { border-top: 1.5px dashed var(--ink-soft); }
+.line.activity { border-top: 2.4px dashed #e89a10; }
 
 /* 상세 */
 .detail {

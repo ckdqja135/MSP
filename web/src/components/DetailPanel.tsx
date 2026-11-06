@@ -16,6 +16,7 @@ interface Props {
 }
 
 const NEARBY_MS = 60_000
+const SNAPSHOT_LAG_MS = 15_000
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -42,7 +43,8 @@ function EventDetail({ event, events }: { event: EventRow; events: EventRow[] })
   const moment = () => {
     const from = new Date(at - 10 * 60_000).toISOString()
     const to = new Date(Math.min(at + 10 * 60_000, Date.now())).toISOString()
-    updateContext({ from, to, at: event.occurred_at, frozen: undefined })
+    // 구조 스냅샷은 이벤트보다 조금 늦게 기록되므로 기록 직후의 구조를 보여준다.
+    updateContext({ from, to, at: new Date(at + SNAPSHOT_LAG_MS).toISOString(), frozen: undefined })
   }
   return (
     <section className="detail-section event-detail">
