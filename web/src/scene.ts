@@ -1,4 +1,5 @@
 import type { Network, Service, Topology } from './api'
+import { summarizePorts } from './format'
 
 // 구조도를 등각 격자 위에 배치한다. a는 오른쪽 아래, b는 오른쪽 위로 가는 축이다.
 export const CELL_X = 118
@@ -163,14 +164,14 @@ export function computeScene(topology: Topology, slots: SlotMemory, collapsed: R
   place('host', 'host', HOST_AT, 1)
   if (publicPorts.length > 0 || hasExternalProbe) {
     place('internet', 'internet', INTERNET_AT, 0)
-    const ports = [...new Set(publicPorts.map((port) => port.host_port))].sort((a, b) => a! - b!)
+    const ports = summarizePorts(publicPorts, 3)
     links.push({
       id: 'external',
       kind: 'external',
       from: 'internet',
       to: 'host',
       d: pathOf([INTERNET_AT, HOST_AT]),
-      label: ports.length > 0 ? `포트 ${ports.join(', ')}` : undefined,
+      label: ports ? `포트 ${ports}` : undefined,
       labelAt: iso((INTERNET_AT.a + HOST_AT.a) / 2, HOST_AT.b),
       stage: 1,
     })

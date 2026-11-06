@@ -32,6 +32,8 @@ export function serviceHeadline(service: Service): string {
     case 'restarting':
       return '재시작 중'
     default:
+      if (first?.state === 'created') return '생성됨, 시작 전'
+      if (first?.state === 'paused') return '일시 정지'
       if (first?.one_off) return `작업 종료 (exit ${first.exit_code})`
       if (first?.oom_killed) return `종료됨 (OOM, exit ${first.exit_code})`
       return `종료됨 (exit ${first?.exit_code ?? '?'})`

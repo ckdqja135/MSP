@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatDuration, formatRate, formatSize, isLateArrival, readMetric } from './format'
+import { compactPorts, formatBytes, formatDuration, formatPortGroup, formatRate, formatSize, groupPorts, isLateArrival, readMetric, summarizePorts } from './format'
 
 describe('readMetric', () => {
   const now = Date.parse('2026-11-06T03:00:00Z')
@@ -55,5 +55,41 @@ describe('isLateArrival', () => {
   it('발생과 수신 차이로 지연 도착을 판단한다', () => {
     expect(isLateArrival({ occurred_at: '2026-11-06T03:00:00Z', received_at: '2026-11-06T03:00:10Z' })).toBe(false)
     expect(isLateArrival({ occurred_at: '2026-11-06T03:00:00Z', received_at: '2026-11-06T03:05:00Z' })).toBe(true)
+  })
+})
+
+describe('포트 묶기', () => {
+  const port = (host_port: number, container_port = host_port, host_ip = '0.0.0.0', proto = 'tcp') => ({ host_port, container_port, host_ip, proto })
+
+  it('연속된 포트를 범위로 합치고 IPv4와 IPv6 중복을 없앤다', () => {
+    const ports = [3002, 3003, 3004].flatMap((n) => [port(n), port(n, n, '::')])
+    expect(groupPorts(ports).map(formatPortGroup)).toEqual(['3002-3004'])
+  })
+
+  it('다른 포트로 연결되면 양쪽을 모두 표시한다', () => {
+    expect(groupPorts([port(8001, 8000)]).map(formatPortGroup)).toEqual(['8001→8000'])
+    expect(groupPorts([port(9000, 80), port(9001, 81)]).map(formatPortGroup)).toEqual(['9000-9001→80-81'])
+  })
+
+  it('번호가 이어져도 연결이 어긋나면 합치지 않는다', () => {
+    expect(groupPorts([port(8000, 80), port(8001, 90)]).map(formatPortGroup)).toEqual(['8000→80', '8001→90'])
+  })
+
+  it('루프백과 공개 바인딩을 합치지 않는다', () => {
+    expect(groupPorts([port(18080, 8080, '127.0.0.1'), port(18081, 8081)]).map(formatPortGroup)).toEqual(['127.0.0.1:18080→8080', '18081→8081'])
+  })
+
+  it('공개되지 않은 포트는 제외한다', () => {
+    expect(groupPorts([{ container_port: 5432, proto: 'tcp' }])).toEqual([])
+  })
+
+  it('장비 라벨은 길면 첫 묶음만 보여준다', () => {
+    expect(compactPorts([port(80), port(443)])).toBe('80, 443')
+    expect(compactPorts([port(3002), port(3003), port(4000), port(4001), port(8002), port(8003), port(9000)])).toBe('3002-3003 외 3개')
+  })
+
+  it('많으면 개수로 줄인다', () => {
+    const ports = [port(1000), port(2000), port(3000), port(4000), port(5000)]
+    expect(summarizePorts(ports, 3)).toBe('1000, 2000, 3000 외 2개')
   })
 })

@@ -1,0 +1,101 @@
+# 실제 Docker에서 에이전트를 시험하기 위한 격리된 Compose 프로젝트다.
+# 다른 서비스와 같은 서버에서 돌려도 부담이 없도록 자원, 로그, 재시작, 출력 횟수에 모두 상한을 둔다.
+# 공개 포트, 볼륨, 호스트 경로, 권한 상승이 없다. 루프백 포트 하나는 바인딩 구분 시험용이다.
+name: msp-test
+
+x-limits: &limits
+  image: busybox:1.37
+  cpus: 0.2
+  mem_limit: 32m
+  memswap_limit: 32m
+  pids_limit: 32
+  read_only: false
+  security_opt:
+    - no-new-privileges:true
+  logging:
+    driver: json-file
+    options:
+      max-size: 1m
+      max-file: "2"
+
+networks:
+  back:
+  front:
+
+services:
+  web:
+    <<: *limits
+    command: ["sh", "-c", "mkdir -p /www && echo ok > /www/health && echo web started && exec httpd -f -p 80 -h /www"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/health"]
+      interval: 5s
+      timeout: 2s
+      retries: 2
+    networks: [front, back]
+    ports:
+      - "127.0.0.1:18790:80"
+    depends_on:
+      api:
+        condition: service_started
+
+  # api는 헬스체크가 없다. 컨테이너는 실행 중인데 앱만 멈춘 상태를 응답 확인으로만 찾는지 본다.
+  # 비밀값은 수집되면 안 되는 표시값이다. 시험에서 DB와 로그에 없는지 확인한다.
+  api:
+    <<: *limits
+    environment:
+      MSP_CANARY_SECRET: msp-canary-env-value
+    command:
+      - sh
+      - -c
+      - |
+        # --token=msp-canary-cmd-value
+        mkdir -p /www && echo ok > /www/health
+        echo "login password=msp-canary-log-value ok"
+        echo "Authorization: Bearer msp-canary-log-value"
+        echo "ERROR sample failure for search"
+        httpd -f -p 80 -h /www &
+        wait
+    networks: [back]
+    expose:
+      - "8080"
+    depends_on:
+      db:
+        condition: service_started
+
+  db:
+    <<: *limits
+    command: ["sh", "-c", "echo db started && exec sleep 86400"]
+    networks: [back]
+
+  # 추가와 삭제 시험용이다.
+  extra:
+    <<: *limits
+    profiles: [extra]
+    command: ["sh", "-c", "exec sleep 86400"]
+    networks: [back]
+
+  # 메모리 제한을 넘겨 이 컨테이너만 OOM으로 종료된다.
+  oom:
+    <<: *limits
+    profiles: [oom]
+    mem_limit: 16m
+    memswap_limit: 16m
+    restart: "no"
+    command: ["sh", "-c", "echo allocating; x=$$(head -c 67108864 /dev/zero | tr '\\0' x); echo done"]
+    networks: [back]
+
+  # 재시작 횟수에 상한이 있어 끝없이 반복하지 않는다.
+  crash:
+    <<: *limits
+    profiles: [crash]
+    restart: on-failure:4
+    command: ["sh", "-c", "echo crashing; exit 1"]
+    networks: [back]
+
+  # 출력 줄 수에 상한이 있고 CPU가 제한되어 있다. 로그 파일은 위 상한을 넘지 않는다.
+  burst:
+    <<: *limits
+    profiles: [burst]
+    restart: "no"
+    command: ["sh", "-c", "i=0; while [ $$i -lt 60000 ]; do echo \"burst line $$i\"; i=$$((i+1)); done; echo burst done"]
+    networks: [back]

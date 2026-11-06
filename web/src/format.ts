@@ -1,4 +1,4 @@
-import type { EventRow, LatestValue } from './api'
+import type { EventRow, LatestValue, PortBinding } from './api'
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
 
@@ -96,4 +96,75 @@ const LATE_AFTER_MS = 60_000
 
 export function isLateArrival(row: Pick<EventRow, 'occurred_at' | 'received_at'>): boolean {
   return Date.parse(row.received_at) - Date.parse(row.occurred_at) > LATE_AFTER_MS
+}
+
+export interface PortGroup {
+  loopback: boolean
+  hostFrom: number
+  hostTo: number
+  containerFrom: number
+  containerTo: number
+  proto: string
+}
+
+const isLoopbackAddress = (host?: string) => host === '127.0.0.1' || host === '::1'
+
+// groupPorts는 공개된 포트를 묶는다. IPv4와 IPv6 바인딩은 하나로 보고 연속된 포트는 범위로 합친다.
+export function groupPorts(ports: PortBinding[]): PortGroup[] {
+  const unique = new Map<string, PortGroup>()
+  for (const port of ports) {
+    if (!port.host_port) continue
+    const loopback = isLoopbackAddress(port.host_ip)
+    const key = `${loopback}|${port.proto}|${port.host_port}|${port.container_port}`
+    unique.set(key, {
+      loopback,
+      proto: port.proto,
+      hostFrom: port.host_port,
+      hostTo: port.host_port,
+      containerFrom: port.container_port,
+      containerTo: port.container_port,
+    })
+  }
+  const sorted = [...unique.values()].sort((a, b) => a.hostFrom - b.hostFrom)
+  const groups: PortGroup[] = []
+  for (const port of sorted) {
+    const last = groups.at(-1)
+    if (
+      last &&
+      last.loopback === port.loopback &&
+      last.proto === port.proto &&
+      last.hostTo + 1 === port.hostFrom &&
+      last.containerTo + 1 === port.containerFrom
+    ) {
+      last.hostTo = port.hostTo
+      last.containerTo = port.containerTo
+    } else {
+      groups.push({ ...port })
+    }
+  }
+  return groups
+}
+
+const range = (from: number, to: number) => (from === to ? String(from) : `${from}-${to}`)
+
+export function formatPortGroup(group: PortGroup): string {
+  const host = range(group.hostFrom, group.hostTo)
+  const container = range(group.containerFrom, group.containerTo)
+  const prefix = group.loopback ? '127.0.0.1:' : ''
+  return group.hostFrom === group.containerFrom ? `${prefix}${host}` : `${prefix}${host}→${container}`
+}
+
+// summarizePorts는 좁은 라벨에 맞게 앞의 몇 개만 보여주고 나머지는 개수로 남긴다.
+export function summarizePorts(ports: PortBinding[], limit = 3): string {
+  const groups = groupPorts(ports)
+  const shown = groups.slice(0, limit).map(formatPortGroup).join(', ')
+  return groups.length > limit ? `${shown} 외 ${groups.length - limit}개` : shown
+}
+
+const COMPACT_PORT_CHARS = 18
+
+// compactPorts는 장비 라벨용이다. 길면 첫 묶음만 보여주고 전체는 상세 패널에서 본다.
+export function compactPorts(ports: PortBinding[]): string {
+  const two = summarizePorts(ports, 2)
+  return two.length <= COMPACT_PORT_CHARS ? two : summarizePorts(ports, 1)
 }

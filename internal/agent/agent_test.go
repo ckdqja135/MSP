@@ -1010,7 +1010,7 @@ func TestExcessLogLinesAreCountedNotHidden(t *testing.T) {
 	}
 	h.startPolling(t)
 	lines, dropped := 0, 0
-	for _, chunk := range readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=blog/api") {
+	for _, chunk := range readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?follow=true&service=blog/api") {
 		lines += len(chunk.Lines)
 		dropped += chunk.Dropped
 	}
@@ -1019,6 +1019,37 @@ func TestExcessLogLinesAreCountedNotHidden(t *testing.T) {
 	}
 	if dropped == 0 {
 		t.Error("한도를 넘었는데 누락이 표시되지 않았다")
+	}
+}
+
+func TestPastLogsKeepTheNewestLines(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	const total = 5000
+	h.docker.logsFn = func(_ context.Context, _ string, _ dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+		for i := 0; i < total; i++ {
+			if !emit(dockerapi.LogEntry{Text: fmt.Sprintf("line %d", i)}) {
+				return nil
+			}
+		}
+		return nil
+	}
+	h.startPolling(t)
+	var last string
+	lines, dropped := 0, 0
+	for _, chunk := range readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?tail=5000&service=blog/api") {
+		lines += len(chunk.Lines)
+		dropped += chunk.Dropped
+		if n := len(chunk.Lines); n > 0 {
+			last = chunk.Lines[n-1].Text
+		}
+	}
+	if lines != total || dropped != 0 {
+		t.Errorf("lines = %d, dropped = %d", lines, dropped)
+	}
+	if last != fmt.Sprintf("line %d", total-1) {
+		t.Errorf("가장 최근 줄이 사라졌다: %q", last)
 	}
 }
 

@@ -16,7 +16,7 @@ import '@xyflow/react/dist/style.css'
 import { diffActivities, eventActivity, mergeCallouts, type Activity } from '../activity'
 import type { EventRow, Network, Project, Server, Service, Topology } from '../api'
 import { updateContext } from '../context'
-import { formatBytes, formatPercent, formatUptime, readMetric } from '../format'
+import { compactPorts, formatBytes, formatPercent, formatUptime, readMetric } from '../format'
 import {
   CELL_X,
   CELL_Y,
@@ -121,13 +121,12 @@ const ServiceNode = memo(function ServiceNode({ data }: NodeProps<Node<ServiceDa
   const { service, now } = data
   const container = service.containers[0]
   const address = container?.networks?.find((network) => network.ip)?.ip
-  const published = service.containers.flatMap((c) => c.ports ?? []).filter((p) => p.host_port)
+  const ports = compactPorts(service.containers.flatMap((c) => c.ports ?? []))
   const totals = serviceTotals(service)
   const cpu = readMetric(totals.cpu, now, formatPercent)
   const mem = readMetric(totals.mem, now, formatBytes)
   const stopped = service.runtime === 'stopped'
   const abnormal = service.status !== 'ok'
-  const ports = [...new Set(published.map((p) => `${p.host_ip === '127.0.0.1' ? '127.0.0.1:' : ''}${p.host_port}→${p.container_port}`))]
   return (
     <div
       className={deviceClasses('device service-card', data, `${service.status} role-${serviceRole(service)}`)}
@@ -146,7 +145,7 @@ const ServiceNode = memo(function ServiceNode({ data }: NodeProps<Node<ServiceDa
         </div>
         <div className="device-address">
           {stopped ? '실행 중 아님' : (address ?? '주소 없음')}
-          {ports.length > 0 && <span className="device-ports"> · {ports.join(' ')}</span>}
+          {ports && <span className="device-ports"> · {ports}</span>}
         </div>
         {abnormal && <div className="device-state">{serviceHeadline(service)}</div>}
         {!stopped && (

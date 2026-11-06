@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { Container, EventRow, Meta, Network, Project, Server, Service, Topology } from '../api'
 import { parseTarget, updateContext } from '../context'
-import { formatAge, formatBytes, formatClock, formatDateTime, formatDuration, formatPercent, formatRate, formatSize, formatUptime, isLateArrival, readMetric, shortID } from '../format'
+import { formatAge, formatBytes, formatClock, formatDateTime, formatDuration, formatPercent, formatPortGroup, formatRate, formatSize, formatUptime, groupPorts, isLateArrival, readMetric, shortID } from '../format'
 import { STATUS_LABEL, evidenceLabel, projectLabel, serviceHeadline, sourceLabel, typeLabel } from '../status'
 import { StatusIcon, UnsupportedIcon } from './Icons'
 
@@ -166,6 +166,10 @@ function HostDetail({ server, now }: { server: Server; now: number }) {
   )
 }
 
+function unpublishedPorts(container: Container): string[] {
+  return (container.ports ?? []).filter((port) => !port.host_port).map((port) => `${port.container_port}/${port.proto}`)
+}
+
 function ContainerDetail({ container, now, historical }: { container: Container; now: number; historical: boolean }) {
   const metric = (name: string, format: (value: number) => string) => {
     const value = readMetric(container.metrics[name], now, format)
@@ -197,10 +201,11 @@ function ContainerDetail({ container, now, historical }: { container: Container;
       {(container.ports ?? []).length > 0 && (
         <Row label="포트">
           <span className="mono port-list">
-            {container.ports!.map((port) => (
-              <span key={`${port.host_ip}:${port.host_port}:${port.container_port}`}>
-                {port.host_port ? `${port.host_ip || '0.0.0.0'}:${port.host_port} → ${port.container_port}/${port.proto}` : `${port.container_port}/${port.proto} (미공개)`}
-              </span>
+            {groupPorts(container.ports!).map((group) => (
+              <span key={formatPortGroup(group)}>{formatPortGroup(group)}/{group.proto}</span>
+            ))}
+            {unpublishedPorts(container).map((port) => (
+              <span key={port} className="muted">{port} (미공개)</span>
             ))}
           </span>
         </Row>

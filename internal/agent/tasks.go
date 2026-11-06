@@ -116,7 +116,9 @@ func (a *Agent) runLogTask(ctx context.Context, task protocol.Task) {
 			windowStart, windowCount = now, 0
 		}
 		windowCount++
-		over := windowCount > logLinesPerSecond
+		// 한도는 실시간 조회에만 건다. 지난 로그는 Tail로 이미 제한되어 있고,
+		// 여기서 자르면 가장 최근 줄이 사라진다.
+		over := request.Follow && windowCount > logLinesPerSecond
 		if over {
 			dropped++
 		} else {
