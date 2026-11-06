@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from 'react'
+import { useLayoutEffect, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { EventRow, GapRow, Meta, Server, Topology } from '../api'
 import { parseTarget, updateContext, type ConsoleContext } from '../context'
@@ -7,6 +7,7 @@ import { CATEGORY_LABEL, UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE, evidenceLabel
 import type { FlowSource } from '../flow'
 import type { FlowPlayer } from '../useFlowPlayer'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
+import { downloadLog, eventsLog, playbackLog, type LogFile } from '../logExport'
 import { FlowControls, FlowPacketTable } from './FlowPlayback'
 import { StatusIcon } from './Icons'
 import { LogsPanel } from './LogsPanel'
@@ -176,6 +177,42 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
     updateContext({ categories: all ? undefined : next.join(',') || 'none' })
   }
   const label = targetLabel(context.target)
+  // 지표와 로그는 데이터를 각 패널이 들고 있으므로 파일을 만드는 함수를 받아 둔다.
+  const panelExport = useRef<(() => LogFile | undefined) | null>(null)
+  const [exportNote, setExportNote] = useState('')
+  const [exporting, setExporting] = useState(false)
+  const buildFile = async (): Promise<LogFile | undefined> => {
+    const now = Date.now()
+    const demo = meta?.mode === 'demo'
+    const serverID = server?.id ?? ''
+    if (context.tab === 'play') return player.script && server ? playbackLog(player.script, serverID, demo, now) : undefined
+    if (context.tab !== 'flow') return panelExport.current?.()
+    if (!server) return undefined
+    const { events, gaps, truncated, from, to } = await flow.collectAll()
+    const conditions = [
+      ...(label ? [`대상 ${label}`] : []),
+      ...(context.categories ? [`종류 ${selectedCategories.map((category) => CATEGORY_LABEL[category] ?? category).join(', ')}`] : []),
+      ...(context.errors === 'true' ? ['오류만'] : []),
+    ]
+    return eventsLog(events, gaps, { server: serverID, demo, range: { from, to }, conditions }, truncated, now)
+  }
+  const exportCurrent = async () => {
+    setExporting(true)
+    setExportNote('')
+    try {
+      const file = await buildFile()
+      if (!file || file.count === 0) {
+        setExportNote(context.tab === 'logs' && !panelExport.current ? '로그를 볼 서비스를 먼저 고르세요' : '내려받을 내용이 없습니다')
+        return
+      }
+      downloadLog(file)
+      setExportNote(`${file.count.toLocaleString('en-US')}건 내려받음`)
+    } catch {
+      setExportNote('내려받지 못했습니다')
+    } finally {
+      setExporting(false)
+    }
+  }
   const notes: string[] = []
   if (meta?.integrations.request_tracing === 'not_connected') notes.push('요청 추적 미연동')
   if (meta?.integrations.packet_capture === 'not_connected') notes.push('패킷 미수집')
@@ -201,6 +238,14 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
         <button type="button" className="tool-button panel-toggle" aria-expanded={!collapsed} onClick={onToggleCollapsed} title="맵을 넓게 보려면 접으세요">
           {collapsed ? '▴ 펼치기' : '▾ 접기'}
         </button>
+        {!collapsed && (
+          <>
+            <button type="button" className="tool-button export-button" disabled={exporting} title="선택한 탭의 기록을 .log 파일로 내려받습니다. 이 브라우저 안에서만 만들어집니다" onClick={exportCurrent}>
+              {exporting ? '만드는 중' : '.log 내려받기'}
+            </button>
+            {exportNote && <span className="export-note" role="status">{exportNote}</span>}
+          </>
+        )}
         {!collapsed && context.tab === 'flow' && (
           <>
             <span className="omitted">
@@ -235,10 +280,10 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
       )}
       {!collapsed && context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}
       {!collapsed && context.tab === 'metrics' && server && (
-        <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} />
+        <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} exportRef={panelExport} />
       )}
       {!collapsed && context.tab === 'logs' && server && (
-        <LogsPanel server={server} topology={topology} context={context} selectedEvent={selectedEvent} />
+        <LogsPanel server={server} topology={topology} context={context} selectedEvent={selectedEvent} exportRef={panelExport} />
       )}
     </section>
   )

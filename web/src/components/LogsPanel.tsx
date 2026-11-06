@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type MutableRefObject } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { EventRow, Server, Service, Topology } from '../api'
 import { parseTarget, timeMode, timeWindow, updateContext, type ConsoleContext } from '../context'
 import { formatClock, shortID } from '../format'
+import { containerLog, type LogFile } from '../logExport'
 import { serviceLabel } from '../status'
 
 const MAX_LINES = 5000
@@ -83,7 +84,9 @@ const STATUS_TEXT: Record<Status, string> = {
   error: '조회 실패',
 }
 
-function LogView({ server, service, context, selectedEvent }: { server: Server; service: Service; context: ConsoleContext; selectedEvent?: EventRow }) {
+type ExportRef = MutableRefObject<(() => LogFile | undefined) | null>
+
+function LogView({ server, service, context, selectedEvent, exportRef }: { server: Server; service: Service; context: ConsoleContext; selectedEvent?: EventRow; exportRef: ExportRef }) {
   const mode = timeMode(context)
   const follow = mode === 'live'
   const [query, setQuery] = useState('')
@@ -106,6 +109,16 @@ function LogView({ server, service, context, selectedEvent }: { server: Server; 
   }
   const url = `/api/v1/servers/${encodeURIComponent(server.id)}/logs?${params}`
   const { lines, dropped, status, error } = useLogStream(url, follow, attempt)
+
+  useEffect(() => {
+    exportRef.current = () => {
+      const conditions = [...(containerID ? [`컨테이너 ${shortID(containerID)}`] : []), ...(appliedQuery ? [`키워드 ${appliedQuery}`] : [])]
+      return containerLog(lines, { server: server.id, demo: server.mode === 'demo', conditions }, service.key, STATUS_TEXT[status], dropped, Date.now())
+    }
+    return () => {
+      exportRef.current = null
+    }
+  })
 
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
@@ -190,9 +203,10 @@ interface Props {
   topology?: Topology
   context: ConsoleContext
   selectedEvent?: EventRow
+  exportRef: ExportRef
 }
 
-export function LogsPanel({ server, topology, context, selectedEvent }: Props) {
+export function LogsPanel({ server, topology, context, selectedEvent, exportRef }: Props) {
   const parsed = parseTarget(context.target)
   const services = topology?.projects.flatMap((project) => project.services) ?? []
   const service = parsed?.kind === 'service' ? services.find((item) => item.key === parsed.key) : undefined
@@ -210,5 +224,5 @@ export function LogsPanel({ server, topology, context, selectedEvent }: Props) {
       </div>
     )
   }
-  return <LogView key={service.key} server={server} service={service} context={context} selectedEvent={selectedEvent} />
+  return <LogView key={service.key} server={server} service={service} context={context} selectedEvent={selectedEvent} exportRef={exportRef} />
 }

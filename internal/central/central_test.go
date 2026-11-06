@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -640,5 +641,35 @@ func TestPeriodicQueriesUseTimeIndex(t *testing.T) {
 		if !strings.Contains(plan, "samples_time") || !strings.Contains(plan, "at") || strings.Contains(plan, "SCAN samples") {
 			t.Errorf("%s 쿼리가 시간 인덱스를 쓰지 않는다:\n%s", name, plan)
 		}
+	}
+}
+
+func TestWebFilesStayFreshAfterRebuild(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "assets"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{"index.html": "<html>", "assets/app-new.js": "new"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	handler := spaHandler(dir)
+	get := func(path string) *httptest.ResponseRecorder {
+		recorder := httptest.NewRecorder()
+		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		return recorder
+	}
+	for _, path := range []string{"/", "/some/route"} {
+		response := get(path)
+		if response.Code != http.StatusOK || response.Header().Get("Cache-Control") != "no-cache" || !strings.Contains(response.Body.String(), "<html>") {
+			t.Errorf("%s: code %d, cache %q, body %q", path, response.Code, response.Header().Get("Cache-Control"), response.Body.String())
+		}
+	}
+	if response := get("/assets/app-new.js"); response.Code != http.StatusOK || response.Body.String() != "new" {
+		t.Errorf("에셋을 주지 못했다: %d", response.Code)
+	}
+	if response := get("/assets/app-old.js"); response.Code != http.StatusNotFound {
+		t.Errorf("지난 빌드의 에셋에 첫 화면을 돌려줬다: %d", response.Code)
 	}
 }

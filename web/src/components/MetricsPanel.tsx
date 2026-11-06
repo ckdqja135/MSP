@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react'
+import { useEffect, useMemo, useRef, type MutableRefObject } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
@@ -6,6 +6,7 @@ import { fetchSamples, type Collector, type EventRow, type GapRow, type SampleSe
 import { alignSeries, chartPoints, hasAnyValue, type AlignedData } from '../chartData'
 import { parseTarget, timeMode, timeWindow, updateContext, type ConsoleContext } from '../context'
 import { formatBytes, formatClock, formatPercent, formatRate } from '../format'
+import { metricsLog, type LogFile, type MetricSeries } from '../logExport'
 import { serviceLabel } from '../status'
 import { UnsupportedIcon } from './Icons'
 
@@ -241,9 +242,10 @@ interface Props {
   gaps: GapRow[]
   selectedEvent?: EventRow
   now: number
+  exportRef: MutableRefObject<(() => LogFile | undefined) | null>
 }
 
-export function MetricsPanel({ server, topology, context, gaps, selectedEvent, now }: Props) {
+export function MetricsPanel({ server, topology, context, gaps, selectedEvent, now, exportRef }: Props) {
   const parsed = parseTarget(context.target)
   const service = parsed?.kind === 'service'
     ? topology?.projects.flatMap((project) => project.services).find((item) => item.key === parsed.key)
@@ -283,12 +285,22 @@ export function MetricsPanel({ server, topology, context, gaps, selectedEvent, n
     const step = results[0]?.data?.step_ms ?? 60_000
     return {
       chart,
+      exported: merged.map((item, index): MetricSeries => ({ ...item, scope: chart.series[index].scope, stepMS: step })),
       data: alignSeries(merged, fromMs, toMs, step),
       loading: results.some((result) => result.isLoading),
     }
   })
 
   const cursorAt = selectedEvent ? Date.parse(selectedEvent.occurred_at) : undefined
+
+  const exportTarget = service?.key ?? 'host'
+  useEffect(() => {
+    exportRef.current = () =>
+      metricsLog(prepared.flatMap((item) => item.exported), gaps, { server: server.id, demo: server.mode === 'demo', range: { from, to }, conditions: [`대상 ${exportTarget}`] }, exportTarget, Date.now())
+    return () => {
+      exportRef.current = null
+    }
+  })
 
   return (
     <div className="metrics">

@@ -1,10 +1,12 @@
-import { useMemo } from 'react'
+import { useCallback, useMemo } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { fetchEvents, fetchGaps, type EventRow, type GapRow, type Topology } from './api'
 import { parseTarget, timeMode, timeWindow, type ConsoleContext } from './context'
 import { UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE } from './status'
 
 const PAGE_SIZE = 200
+// 내보내기 한 번에 담는 최대 기록 수다. 넘으면 파일에 일부만 담았다고 밝힌다.
+const EXPORT_LIMIT = 50_000
 
 // targetServices는 선택 대상을 흐름표 필터로 바꾼다. 서버 전체면 필터가 없다.
 export function targetServices(target: string | undefined, topology: Topology | undefined): string[] | undefined {
@@ -36,6 +38,16 @@ export interface FlowData {
   hasMore: boolean
   loadMore: () => void
   loadingMore: boolean
+  // 화면에 불러온 만큼이 아니라 조건에 맞는 기록 전체를 가져온다.
+  collectAll: () => Promise<FlowExport>
+}
+
+export interface FlowExport {
+  events: EventRow[]
+  gaps: GapRow[]
+  truncated: boolean
+  from: string
+  to: string
 }
 
 export function useFlowRecords(server: string | undefined, context: ConsoleContext, topology: Topology | undefined): FlowData {
@@ -67,6 +79,23 @@ export function useFlowRecords(server: string | undefined, context: ConsoleConte
     placeholderData: (previous) => previous,
   })
 
+  const collectAll = useCallback(async (): Promise<FlowExport> => {
+    const { from, to } = timeWindow(context, Date.now())
+    const gapRows = server ? await fetchGaps(server, from, to) : []
+    const rows: EventRow[] = []
+    if (!server || services?.length === 0) return { events: rows, gaps: gapRows, truncated: false, from, to }
+    let before: number | undefined
+    while (rows.length < EXPORT_LIMIT) {
+      const page = await fetchEvents(server, { from, to, services, categories, errorsOnly, before, limit: PAGE_SIZE })
+      rows.push(...page)
+      if (page.length < PAGE_SIZE) return { events: rows, gaps: gapRows, truncated: false, from, to }
+      before = page[page.length - 1].id
+    }
+    return { events: rows, gaps: gapRows, truncated: true, from, to }
+    // 목록은 값으로 비교한다. 렌더링마다 새 배열이 만들어지기 때문이다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [server, context, errorsOnly, JSON.stringify(services), JSON.stringify(categories)])
+
   const eventRows = useMemo(() => events.data?.pages.flat() ?? [], [events.data])
   const gapRows = useMemo(() => gaps.data ?? [], [gaps.data])
   const records = useMemo(() => mergeRecords(eventRows, gapRows), [eventRows, gapRows])
@@ -80,5 +109,6 @@ export function useFlowRecords(server: string | undefined, context: ConsoleConte
     hasMore: events.hasNextPage,
     loadMore: () => events.fetchNextPage(),
     loadingMore: events.isFetchingNextPage,
+    collectAll,
   }
 }

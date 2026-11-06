@@ -377,11 +377,18 @@ func spaHandler(dir string) http.Handler {
 	files := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := filepath.Join(dir, filepath.Clean(r.URL.Path))
-		if info, err := os.Stat(target); err != nil || info.IsDir() {
-			http.ServeFile(w, r, filepath.Join(dir, "index.html"))
+		if info, err := os.Stat(target); err == nil && !info.IsDir() {
+			files.ServeHTTP(w, r)
 			return
 		}
-		files.ServeHTTP(w, r)
+		// 없는 에셋에 첫 화면을 돌려주면 브라우저가 HTML을 스크립트로 읽어 빈 화면이 된다.
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			http.NotFound(w, r)
+			return
+		}
+		// 빌드하면 에셋 이름이 바뀌므로 첫 화면은 매번 확인하게 한다. 옛 화면이 남으면 새 기능이 보이지 않는다.
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeFile(w, r, filepath.Join(dir, "index.html"))
 	})
 }
 
