@@ -129,6 +129,46 @@ async function get<T>(path: string, params?: URLSearchParams): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export type EventCategory = 'ops' | 'probe' | 'resource' | 'alert' | 'gap'
+
+export interface EventRow {
+  id: number
+  occurred_at: string
+  received_at: string
+  category: EventCategory
+  type: string
+  severity: 'info' | 'warning' | 'critical'
+  source: string
+  target: string
+  service_key: string
+  container_id: string
+  summary: string
+  duration_ms: number | null
+  duration_limit_ms: number | null
+  bytes: number | null
+  result: string
+  evidence: string
+  aggregated: number
+}
+
+export interface GapRow {
+  source: string
+  from: string
+  to: string
+  reason: string
+  dropped: number
+}
+
+export interface EventQuery {
+  from: string
+  to: string
+  services?: string[]
+  categories?: string[]
+  errorsOnly?: boolean
+  before?: number
+  limit?: number
+}
+
 export const fetchMeta = () => get<Meta>('/meta')
 
 export const fetchServers = () => get<Server[]>('/servers')
@@ -137,4 +177,18 @@ export function fetchTopology(server: string, at?: string) {
   const params = new URLSearchParams()
   if (at) params.set('at', at)
   return get<Topology>(`/servers/${encodeURIComponent(server)}/topology`, params)
+}
+
+export function fetchEvents(server: string, query: EventQuery) {
+  const params = new URLSearchParams({ from: query.from, to: query.to })
+  query.services?.forEach((service) => params.append('service', service))
+  query.categories?.forEach((category) => params.append('category', category))
+  if (query.errorsOnly) params.set('errors', 'true')
+  if (query.before) params.set('before', String(query.before))
+  if (query.limit) params.set('limit', String(query.limit))
+  return get<EventRow[]>(`/servers/${encodeURIComponent(server)}/events`, params)
+}
+
+export function fetchGaps(server: string, from: string, to: string) {
+  return get<GapRow[]>(`/servers/${encodeURIComponent(server)}/gaps`, new URLSearchParams({ from, to }))
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { formatBytes, formatRate, readMetric } from './format'
+import { formatBytes, formatDuration, formatRate, formatSize, isLateArrival, readMetric } from './format'
 
 describe('readMetric', () => {
   const now = Date.parse('2026-11-06T03:00:00Z')
@@ -25,5 +25,35 @@ describe('formatBytes', () => {
     expect(formatBytes(999)).toBe('999 B')
     expect(formatBytes(1500)).toBe('1.5 KB')
     expect(formatBytes(410_000_000)).toBe('410 MB')
+  })
+})
+
+describe('formatDuration', () => {
+  it('제한 시간 초과를 측정값처럼 표시하지 않는다', () => {
+    expect(formatDuration({ category: 'probe', duration_ms: null, duration_limit_ms: 5000 })).toBe('>5,000ms (제한 초과)')
+  })
+
+  it('측정값은 0도 값으로 표시한다', () => {
+    expect(formatDuration({ category: 'probe', duration_ms: 0, duration_limit_ms: null })).toBe('0ms')
+    expect(formatDuration({ category: 'probe', duration_ms: 8200, duration_limit_ms: null })).toBe('8.2초')
+  })
+
+  it('수집하지 않은 값과 해당 없는 값을 구분한다', () => {
+    expect(formatDuration({ category: 'probe', duration_ms: null, duration_limit_ms: null })).toBe('미측정')
+    expect(formatDuration({ category: 'ops', duration_ms: null, duration_limit_ms: null })).toBe('—')
+  })
+})
+
+describe('formatSize', () => {
+  it('크기를 모르면 0으로 표시하지 않는다', () => {
+    expect(formatSize({ bytes: null })).toBe('—')
+    expect(formatSize({ bytes: 0 })).toBe('0 B')
+  })
+})
+
+describe('isLateArrival', () => {
+  it('발생과 수신 차이로 지연 도착을 판단한다', () => {
+    expect(isLateArrival({ occurred_at: '2026-11-06T03:00:00Z', received_at: '2026-11-06T03:00:10Z' })).toBe(false)
+    expect(isLateArrival({ occurred_at: '2026-11-06T03:00:00Z', received_at: '2026-11-06T03:05:00Z' })).toBe(true)
   })
 })

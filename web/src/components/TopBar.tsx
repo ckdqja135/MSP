@@ -99,7 +99,7 @@ export function TopBar({ meta, servers, server, topology, context, now, streamCo
         <button
           type="button"
           className={mode === 'live' ? 'active' : ''}
-          onClick={() => updateContext({ frozen: undefined, from: undefined, to: undefined })}
+          onClick={() => updateContext({ frozen: undefined, from: undefined, to: undefined, at: undefined })}
         >
           <i className="live-dot" />실시간
         </button>

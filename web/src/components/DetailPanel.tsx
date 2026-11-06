@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import type { Container, Meta, Network, Project, Server, Service, Topology } from '../api'
+import type { Container, EventRow, Meta, Network, Project, Server, Service, Topology } from '../api'
 import { parseTarget, updateContext } from '../context'
-import { formatAge, formatBytes, formatDateTime, formatPercent, formatRate, formatUptime, readMetric, shortID } from '../format'
-import { STATUS_LABEL, projectLabel, serviceHeadline } from '../status'
+import { formatAge, formatBytes, formatClock, formatDateTime, formatDuration, formatPercent, formatRate, formatSize, formatUptime, isLateArrival, readMetric, shortID } from '../format'
+import { STATUS_LABEL, evidenceLabel, projectLabel, serviceHeadline, sourceLabel, typeLabel } from '../status'
 import { StatusIcon, UnsupportedIcon } from './Icons'
 
 interface Props {
@@ -11,7 +11,11 @@ interface Props {
   topology?: Topology
   target?: string
   now: number
+  selectedEvent?: EventRow
+  events: EventRow[]
 }
+
+const NEARBY_MS = 60_000
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -27,6 +31,53 @@ function ReadOnlyNotice() {
     <section className="detail-section">
       <h3>관리</h3>
       <p className="muted">이 버전은 읽기 전용입니다. 시작, 중지, 재시작 기능이 없습니다.</p>
+    </section>
+  )
+}
+
+// EventDetail은 선택한 기록과 같은 시간대의 기록을 보여준다. 시간이 가까운 것을 원인으로 표현하지 않는다.
+function EventDetail({ event, events }: { event: EventRow; events: EventRow[] }) {
+  const at = Date.parse(event.occurred_at)
+  const nearby = events.filter((other) => other.id !== event.id && Math.abs(Date.parse(other.occurred_at) - at) <= NEARBY_MS)
+  const moment = () => {
+    const from = new Date(at - 10 * 60_000).toISOString()
+    const to = new Date(Math.min(at + 10 * 60_000, Date.now())).toISOString()
+    updateContext({ from, to, at: event.occurred_at, frozen: undefined })
+  }
+  return (
+    <section className="detail-section event-detail">
+      <h3>선택한 기록</h3>
+      <div className="headline">{event.summary}</div>
+      <Row label="발생">{formatDateTime(event.occurred_at)}</Row>
+      <Row label="수신">
+        {formatDateTime(event.received_at)}
+        {isLateArrival(event) && <span className="late-tag">지연 도착</span>}
+      </Row>
+      <Row label="출발">{sourceLabel(event.source)}</Row>
+      <Row label="도착"><span className="mono">{event.target || '—'}</span></Row>
+      <Row label="유형">{typeLabel(event.type)}</Row>
+      <Row label="소요">{formatDuration(event)}</Row>
+      <Row label="크기">{formatSize(event)}</Row>
+      <Row label="결과">{event.result || '—'}</Row>
+      <Row label="근거">{evidenceLabel(event.evidence)}</Row>
+      {event.container_id && <Row label="컨테이너"><span className="mono">{shortID(event.container_id)}</span></Row>}
+      <div className="detail-links">
+        {event.service_key && (
+          <button type="button" className="tool-button" onClick={() => updateContext({ target: `svc:${event.service_key}` })}>이 대상으로 좁히기</button>
+        )}
+        <button type="button" className="tool-button" onClick={moment}>이 시점 구조 보기</button>
+        <button type="button" className="tool-button" onClick={() => updateContext({ event: undefined })}>선택 해제</button>
+      </div>
+      <h3 className="nearby-title">같은 시간대 기록 (앞뒤 1분)</h3>
+      <p className="muted small">시간이 가까운 기록입니다. 원인 관계를 뜻하지 않습니다.</p>
+      {nearby.length === 0 && <p className="muted small">이 조회 범위에는 없습니다.</p>}
+      {nearby.slice(0, 8).map((other) => (
+        <button key={other.id} type="button" className="nearby-row" onClick={() => updateContext({ event: String(other.id) })}>
+          <span className="mono">{formatClock(other.occurred_at)}</span>
+          <span className="mono">{other.target || '—'}</span>
+          <span className="ellipsis">{typeLabel(other.type)}</span>
+        </button>
+      ))}
     </section>
   )
 }
@@ -229,7 +280,7 @@ function ProjectDetail({ project }: { project: Project }) {
   )
 }
 
-export function DetailPanel({ meta, server, topology, target, now }: Props) {
+export function DetailPanel({ meta, server, topology, target, now, selectedEvent, events }: Props) {
   const parsed = parseTarget(target)
   let content: ReactNode = <p className="muted empty">맵이나 왼쪽 목록에서 대상을 선택하면 상세 정보가 표시됩니다.</p>
 
@@ -249,6 +300,7 @@ export function DetailPanel({ meta, server, topology, target, now }: Props) {
   return (
     <aside className="detail" aria-label="상세 정보">
       <h2 className="panel-title">상세</h2>
+      {selectedEvent && <EventDetail event={selectedEvent} events={events} />}
       {content}
       {meta?.read_only && <ReadOnlyNotice />}
     </aside>

@@ -1,4 +1,4 @@
-import type { LatestValue } from './api'
+import type { EventRow, LatestValue } from './api'
 
 const BYTE_UNITS = ['B', 'KB', 'MB', 'GB', 'TB']
 
@@ -73,4 +73,27 @@ export function readMetric(
     return { state: 'stale', text, age: formatAge(latest.at, now) }
   }
   return { state: 'fresh', text }
+}
+
+function formatMilliseconds(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}초`
+}
+
+// formatDuration은 측정값, 제한 초과, 수집 안 함, 해당 없음을 구분한다.
+// 응답 확인은 소요 시간 개념이 있으므로 값이 없으면 미측정이고, Docker 이벤트에는 소요 시간 개념이 없다.
+export function formatDuration(row: Pick<EventRow, 'category' | 'duration_ms' | 'duration_limit_ms'>): string {
+  if (row.duration_limit_ms !== null) return `>${row.duration_limit_ms.toLocaleString('en-US')}ms (제한 초과)`
+  if (row.duration_ms !== null) return formatMilliseconds(row.duration_ms)
+  return row.category === 'probe' ? '미측정' : '—'
+}
+
+export function formatSize(row: Pick<EventRow, 'bytes'>): string {
+  return row.bytes === null ? '—' : formatBytes(row.bytes)
+}
+
+const LATE_AFTER_MS = 60_000
+
+export function isLateArrival(row: Pick<EventRow, 'occurred_at' | 'received_at'>): boolean {
+  return Date.parse(row.received_at) - Date.parse(row.occurred_at) > LATE_AFTER_MS
 }

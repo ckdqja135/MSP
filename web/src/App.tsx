@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchMeta, fetchServers, fetchTopology } from './api'
+import { fetchEvents, fetchMeta, fetchServers, fetchTopology } from './api'
+import { BottomPanel } from './components/BottomPanel'
 import { TopBar } from './components/TopBar'
 import { Explorer } from './components/Explorer'
 import { DetailPanel } from './components/DetailPanel'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
 import { timeMode, updateContext, useConsoleContext } from './context'
+import { formatDateTime } from './format'
+import { useFlowRecords } from './useFlowRecords'
 
 const REFRESH_INTERVAL_MS = 3000
 
@@ -62,7 +65,7 @@ export function App() {
     if (server && context.server !== server.id) updateContext({ server: server.id })
   }, [server, context.server])
 
-  const historicalAt = mode === 'past' ? context.to : undefined
+  const historicalAt = mode === 'past' ? (context.at ?? context.to) : undefined
   const topology = useQuery({
     queryKey: [live ? 'live' : 'fixed', 'topology', server?.id, historicalAt],
     queryFn: () => fetchTopology(server!.id, historicalAt),
@@ -72,7 +75,24 @@ export function App() {
   })
 
   const clock = mode === 'frozen' && context.frozen ? Date.parse(context.frozen) : now
-  const highlight = useMemo<MapHighlight>(() => ({ nodes: new Set() }), [])
+  const flow = useFlowRecords(server?.id, context, topology.data)
+  const selectedEvent = flow.events.find((event) => String(event.id) === context.event)
+
+  // 행 선택은 강조만 하고 대상 필터는 바꾸지 않는다. 필터를 바꾸면 선택한 행이 표에서 사라질 수 있다.
+  const highlight = useMemo<MapHighlight>(() => {
+    if (!selectedEvent?.service_key) return { nodes: new Set() }
+    return {
+      nodes: new Set([`svc:${selectedEvent.service_key}`]),
+      note: '선택한 기록의 대상만 강조합니다. 시간이 가깝다는 이유로 원인으로 판단하지 않습니다.',
+    }
+  }, [selectedEvent])
+
+  const pendingSinceFreeze = useQuery({
+    queryKey: ['frozen-count', server?.id, context.frozen],
+    queryFn: () => fetchEvents(server!.id, { from: context.frozen!, to: new Date().toISOString(), limit: 500 }),
+    enabled: mode === 'frozen' && Boolean(server),
+    refetchInterval: 5000,
+  })
 
   return (
     <div className="console">
@@ -93,13 +113,14 @@ export function App() {
       {mode === 'frozen' && (
         <div className="freeze-banner" role="status">
           화면 갱신만 멈췄습니다. 서버와 데이터 수집은 계속 동작합니다.
+          <span>신규 기록 {pendingSinceFreeze.data?.length ?? 0}{pendingSinceFreeze.data?.length === 500 ? '건 이상' : '건'} 대기</span>
           <button type="button" className="link" onClick={() => updateContext({ frozen: undefined })}>실시간으로 돌아가기</button>
         </div>
       )}
       {mode === 'past' && (
         <div className="freeze-banner" role="status">
-          과거 구간을 보고 있습니다. 관리 기능과 현재 상태는 이 구간과 별개입니다.
-          <button type="button" className="link" onClick={() => updateContext({ from: undefined, to: undefined })}>실시간으로 돌아가기</button>
+          과거 구간을 보고 있습니다. 구조맵은 {historicalAt ? formatDateTime(historicalAt) : ''} 시점입니다.
+          <button type="button" className="link" onClick={() => updateContext({ from: undefined, to: undefined, at: undefined })}>실시간으로 돌아가기</button>
         </div>
       )}
       <main className="workspace">
@@ -112,7 +133,8 @@ export function App() {
             <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} />
           )}
         </section>
-        <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} />
+        <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} />
       </main>
     </div>
   )

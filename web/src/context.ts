@@ -7,9 +7,13 @@ export interface ConsoleContext {
   range: string
   from?: string
   to?: string
+  // at은 과거 구간에서 구조맵이 보여줄 시점이다. 없으면 구간의 끝을 쓴다.
+  at?: string
   frozen?: string
   event?: string
   tab: string
+  categories?: string
+  errors?: string
 }
 
 export const RANGES: Record<string, number> = {
@@ -30,9 +34,12 @@ export function parseContext(search: string): ConsoleContext {
     range: range in RANGES ? range : '1h',
     from: params.get('from') ?? undefined,
     to: params.get('to') ?? undefined,
+    at: params.get('at') ?? undefined,
     frozen: params.get('frozen') ?? undefined,
     event: params.get('event') ?? undefined,
     tab: params.get('tab') ?? 'flow',
+    categories: params.get('categories') ?? undefined,
+    errors: params.get('errors') ?? undefined,
   }
 }
 
