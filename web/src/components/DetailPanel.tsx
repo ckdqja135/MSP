@@ -324,7 +324,11 @@ function HostServiceDetail({ service }: { service: HostService }) {
             <span key={`${port.ip}:${port.port}`}>{port.ip ? `${port.ip}:` : ''}{port.port}</span>
           ))}
         </span>
-        <p className="muted small">포트가 열려 있다는 뜻입니다. 외부에서 닿는지와 앱이 응답하는지는 응답 확인으로 알 수 있습니다.</p>
+        {service.listening ? (
+          <p className="muted small">포트가 열려 있다는 뜻입니다. 외부에서 닿는지와 앱이 응답하는지는 응답 확인으로 알 수 있습니다.</p>
+        ) : (
+          <p className="muted small">설정에 적은 포트가 열려 있지 않습니다. 멈췄거나 다른 포트를 쓰는 경우일 수 있으며, 원인은 알 수 없습니다.</p>
+        )}
       </section>
       <section className="detail-section">
         <h3>자원</h3>

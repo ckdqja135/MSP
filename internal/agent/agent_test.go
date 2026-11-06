@@ -1141,6 +1141,24 @@ func TestHostServiceNameIsOnlyGuessedWithEvidence(t *testing.T) {
 	}
 }
 
+func TestAllLoopbackAddressesAreExcluded(t *testing.T) {
+	services := deriveHostServices([]hostports.Listener{
+		{IP: "127.0.0.53", Port: 53},
+		{IP: "127.0.0.54", Port: 53},
+		{IP: "::1", Port: 631},
+	}, nil, nil, nil)
+	if len(services) != 0 {
+		t.Errorf("루프백을 공개 포트로 봤다: %+v", services)
+	}
+}
+
+func TestAmbiguousPortIsNotGuessed(t *testing.T) {
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"nginx": true, "apache2": true}, nil, nil)
+	if len(services) != 1 || services[0].Name != "" || services[0].Evidence != protocol.HostEvidenceUnknown {
+		t.Errorf("후보가 둘인데 하나로 단정했다: %+v", services)
+	}
+}
+
 func TestWellKnownPortWithoutProcessIsNotNamed(t *testing.T) {
 	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"sshd": true}, nil, nil)
 	if services[0].Name != "" {

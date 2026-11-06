@@ -100,6 +100,7 @@ export function isLateArrival(row: Pick<EventRow, 'occurred_at' | 'received_at'>
 
 export interface PortGroup {
   loopback: boolean
+  host: string
   hostFrom: number
   hostTo: number
   containerFrom: number
@@ -107,7 +108,8 @@ export interface PortGroup {
   proto: string
 }
 
-const isLoopbackAddress = (host?: string) => host === '127.0.0.1' || host === '::1'
+// 127.0.0.0/8 전체가 루프백이다. 127.0.0.53 같은 주소도 외부에서 닿지 않는다.
+export const isLoopbackAddress = (host?: string) => host === '::1' || Boolean(host?.startsWith('127.'))
 
 // groupPorts는 공개된 포트를 묶는다. IPv4와 IPv6 바인딩은 하나로 보고 연속된 포트는 범위로 합친다.
 export function groupPorts(ports: PortBinding[]): PortGroup[] {
@@ -118,6 +120,7 @@ export function groupPorts(ports: PortBinding[]): PortGroup[] {
     const key = `${loopback}|${port.proto}|${port.host_port}|${port.container_port}`
     unique.set(key, {
       loopback,
+      host: port.host_ip ?? '',
       proto: port.proto,
       hostFrom: port.host_port,
       hostTo: port.host_port,
@@ -150,7 +153,7 @@ const range = (from: number, to: number) => (from === to ? String(from) : `${fro
 export function formatPortGroup(group: PortGroup): string {
   const host = range(group.hostFrom, group.hostTo)
   const container = range(group.containerFrom, group.containerTo)
-  const prefix = group.loopback ? '127.0.0.1:' : ''
+  const prefix = group.loopback ? `${group.host}:` : ''
   return group.hostFrom === group.containerFrom ? `${prefix}${host}` : `${prefix}${host}→${container}`
 }
 

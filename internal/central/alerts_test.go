@@ -459,6 +459,13 @@ func TestDeclaredHostServiceClosedFiresAlert(t *testing.T) {
 			t.Errorf("자동으로 찾은 서비스로 알렸다: %+v", sent)
 		}
 	}
+	events, err := store.Events(ctx, "home-1", EventFilter{From: baseTime, To: later.Add(time.Minute), Services: []string{"_host/nginx"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 || events[0].Target != "nginx" {
+		t.Errorf("알림 기록이 호스트 서비스에 연결되지 않았다: %+v", events)
+	}
 }
 
 func TestAlertsAPIListsActiveFirst(t *testing.T) {

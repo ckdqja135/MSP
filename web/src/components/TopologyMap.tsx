@@ -328,14 +328,14 @@ const PlateNode = memo(function PlateNode({ data }: NodeProps<Node<PlateData, 'p
   // 머리글은 판의 위 꼭짓점 위에 둔다. 옆 프로젝트의 라벨과 겹치지 않는 자리다.
   const apex = plate.corners[1]
   if (plate.host || !project) {
-    // 호스트 판 위쪽은 스위치와 연결선이 지나가므로 아래 꼭짓점 밑에 적는다.
+    // 호스트 판 위쪽은 스위치와 연결선이 지나가므로 아래 꼭짓점 안쪽에 적는다. 판 밖에 두면 범례에 가려진다.
     const bottom = plate.corners[3]
     return (
       <div className="project-plate host-plate">
         <svg className="plate-shape" aria-hidden="true">
           <polygon points={points} />
         </svg>
-        <div className="plate-head plate-head-below" style={{ left: bottom.x - origin.x, top: bottom.y - origin.y + 6 }}>
+        <div className="plate-head plate-head-below" style={{ left: bottom.x - origin.x, top: bottom.y - origin.y - 26 }}>
           <strong>이 서버, Docker 밖</strong>
         </div>
       </div>

@@ -79,6 +79,10 @@ describe('포트 묶기', () => {
     expect(groupPorts([port(18080, 8080, '127.0.0.1'), port(18081, 8081)]).map(formatPortGroup)).toEqual(['127.0.0.1:18080→8080', '18081→8081'])
   })
 
+  it('127.0.0.0/8 전체를 루프백으로 본다', () => {
+    expect(groupPorts([port(5353, 53, '127.0.0.53')]).map(formatPortGroup)).toEqual(['127.0.0.53:5353→53'])
+  })
+
   it('공개되지 않은 포트는 제외한다', () => {
     expect(groupPorts([{ container_port: 5432, proto: 'tcp' }])).toEqual([])
   })

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"net"
 	"sort"
 	"strings"
 
@@ -18,8 +19,25 @@ var wellKnownPorts = map[int][]string{
 	6379: {"redis-server"},
 }
 
+// isLoopbackIP는 127.0.0.0/8 전체를 루프백으로 본다. 127.0.0.53 같은 주소도 외부에서 닿지 않는다.
 func isLoopbackIP(ip string) bool {
-	return ip == "127.0.0.1" || ip == "::1"
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
+}
+
+// guessName은 후보가 하나일 때만 이름을 추정한다. 둘 이상이면 어느 쪽인지 알 수 없다.
+func guessName(port int, running map[string]bool) string {
+	found := ""
+	for _, name := range wellKnownPorts[port] {
+		if !running[name] {
+			continue
+		}
+		if found != "" {
+			return ""
+		}
+		found = name
+	}
+	return found
 }
 
 // deriveHostServices는 열린 포트를 서비스로 묶는다. 컨테이너가 공개한 포트와 루프백 전용 포트는 제외한다.
@@ -54,11 +72,8 @@ func deriveHostServices(listeners []hostports.Listener, running map[string]bool,
 			group = key{listener.Process, protocol.HostEvidenceOwner}
 		default:
 			group = key{"", protocol.HostEvidenceUnknown}
-			for _, name := range wellKnownPorts[listener.Port] {
-				if running[name] {
-					group = key{name, protocol.HostEvidenceName}
-					break
-				}
+			if name := guessName(listener.Port, running); name != "" {
+				group = key{name, protocol.HostEvidenceName}
 			}
 		}
 		groups[group] = append(groups[group], protocol.HostPort{IP: listener.IP, Port: listener.Port})

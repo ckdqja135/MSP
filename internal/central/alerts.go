@@ -453,6 +453,17 @@ func (e *AlertEngine) Evaluate(ctx context.Context, now time.Time) error {
 	return nil
 }
 
+// alertService는 알림 대상을 흐름표의 서비스 키와 표시 이름으로 바꾼다.
+func alertService(target string) (service, name string) {
+	if key, ok := strings.CutPrefix(target, "svc:"); ok {
+		return key, key
+	}
+	if key, ok := strings.CutPrefix(target, "hostsvc:"); ok {
+		return protocol.ServiceKey(protocol.HostProject, key), key
+	}
+	return "", target
+}
+
 // announce는 흐름표에 남기고 채널로 보낸다. 전송 결과도 기록한다.
 func (e *AlertEngine) announce(ctx context.Context, alert Alert, kind string, now time.Time) {
 	severity := alert.Severity
@@ -461,13 +472,10 @@ func (e *AlertEngine) announce(ctx context.Context, alert Alert, kind string, no
 		severity = protocol.SeverityInfo
 	}
 	if kind != notifyReminder {
-		service := strings.TrimPrefix(alert.Target, "svc:")
-		if service == alert.Target {
-			service = ""
-		}
+		service, target := alertService(alert.Target)
 		if err := e.store.recordEvent(ctx, alert.ServerID, protocol.Event{
 			OccurredAt: now, Category: protocol.CategoryAlert, Type: "alert." + kind, Severity: severity,
-			Source: "central", Target: strings.TrimPrefix(alert.Target, "svc:"), ServiceKey: service,
+			Source: "central", Target: target, ServiceKey: service,
 			Summary: alert.Title, Result: result, Evidence: "alert-rule",
 		}, now); err != nil {
 			log.Printf("알림 기록 실패: %v", err)

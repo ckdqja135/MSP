@@ -1,5 +1,5 @@
 import type { HostService, Network, PortBinding, Project, Service, Topology } from './api'
-import { summarizePorts } from './format'
+import { isLoopbackAddress, summarizePorts } from './format'
 import { hostServiceKey } from './status'
 
 // 구조도를 등각 격자 위에 배치한다. a는 오른쪽 아래, b는 오른쪽 위로 가는 축이다.
@@ -160,9 +160,7 @@ function laneRoute(from: Lattice, to: Lattice, lane: number): string {
 
 const rowA = (row: number) => 1 + row * ROW_GAP
 
-function isLoopback(host?: string): boolean {
-  return host === '127.0.0.1' || host === '::1'
-}
+const isLoopback = isLoopbackAddress
 
 // computeScene은 구조 데이터를 그림으로 바꾼다. 네트워크 소속은 네트워크 장비로만 연결하고
 // 서비스끼리 잇는 선은 선언된 의존에서만 만든다.

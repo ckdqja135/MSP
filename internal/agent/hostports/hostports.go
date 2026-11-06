@@ -150,10 +150,29 @@ func Scan(root string) ([]Listener, error) {
 	return listeners, nil
 }
 
-// RunningNames는 실행 중인 프로세스 이름만 돌려준다. 명령줄 인자는 읽지 않는다.
+// inContainer는 cgroup 경로로 컨테이너 안의 프로세스인지 판단한다.
+// 호스트의 /proc에는 컨테이너 프로세스도 보이므로 구분하지 않으면 이름을 잘못 추정한다.
+func inContainer(root, pid string) bool {
+	body, err := os.ReadFile(filepath.Join(root, pid, "cgroup"))
+	if err != nil {
+		return false
+	}
+	text := string(body)
+	for _, mark := range []string{"docker", "containerd", "kubepods", "libpod", "lxc"} {
+		if strings.Contains(text, mark) {
+			return true
+		}
+	}
+	return false
+}
+
+// RunningNames는 호스트에서 직접 도는 프로세스 이름만 돌려준다. 명령줄 인자는 읽지 않는다.
 func RunningNames(root string) map[string]bool {
 	names := map[string]bool{}
 	for _, pid := range numericEntries(root) {
+		if inContainer(root, pid) {
+			continue
+		}
 		if name := readComm(root, pid); name != "" {
 			names[name] = true
 		}

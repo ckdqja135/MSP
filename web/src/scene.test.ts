@@ -182,6 +182,12 @@ describe('호스트 서비스', () => {
     expect(scene.links.find((link) => link.kind === 'external')?.label).toBe('포트 443')
   })
 
+  it('127.0.0.53 같은 주소는 공개 포트로 세지 않는다', () => {
+    const data = withHosts([host('dns', { ports: [{ ip: '127.0.0.53', port: 53 }] })])
+    const scene = computeScene(data, assignSlots(emptySlots(), data), new Set())
+    expect(scene.devices.some((item) => item.kind === 'internet')).toBe(false)
+  })
+
   it('닫힌 서비스는 공개 포트로 세지 않는다', () => {
     const data = withHosts([host('nginx', { listening: false, evidence: 'config' })])
     const scene = computeScene(data, assignSlots(emptySlots(), data), new Set())

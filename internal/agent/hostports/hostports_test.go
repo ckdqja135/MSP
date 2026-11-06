@@ -2,6 +2,7 @@ package hostports
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -95,6 +96,20 @@ func TestRunningNames(t *testing.T) {
 	}
 }
 
+func TestRunningNamesExcludeContainerProcesses(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, "10", "comm"), "nginx\n")
+	write(t, filepath.Join(root, "10", "cgroup"), "0::/system.slice/nginx.service\n")
+	write(t, filepath.Join(root, "20", "comm"), "apache2\n")
+	write(t, filepath.Join(root, "20", "cgroup"), "0::/system.slice/docker-abc123.scope\n")
+	write(t, filepath.Join(root, "30", "comm"), "mysqld\n")
+	write(t, filepath.Join(root, "30", "cgroup"), "12:memory:/docker/abc123\n")
+	names := RunningNames(root)
+	if !names["nginx"] || names["apache2"] || names["mysqld"] {
+		t.Errorf("컨테이너 프로세스를 호스트 프로세스로 봤다: %v", names)
+	}
+}
+
 func TestMalformedLinesAreSkipped(t *testing.T) {
 	root := t.TempDir()
 	write(t, filepath.Join(root, "net", "tcp"), tcpHeader+"garbage line\n   0: ZZZ:0050 0:0 0A 0 0 0 0 0 1 0\n")
@@ -102,4 +117,36 @@ func TestMalformedLinesAreSkipped(t *testing.T) {
 	if err != nil || len(listeners) != 0 {
 		t.Errorf("listeners = %+v err = %v", listeners, err)
 	}
+}
+
+// 실제 /proc가 있는 Linux에서만 돈다. 자기 프로세스의 루프백 포트만 열어 다른 것에 영향을 주지 않는다.
+func TestScanFindsOwnListenerOnRealProc(t *testing.T) {
+	if _, err := os.Stat("/proc/net/tcp"); err != nil {
+		t.Skip("/proc/net/tcp가 없는 환경")
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	listeners, err := Scan("/proc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, found := range listeners {
+		if found.Port == port {
+			if found.IP != "127.0.0.1" || found.Process == "" {
+				t.Errorf("found = %+v", found)
+			}
+			t.Logf("찾음: %+v, 전체 %d개", found, len(listeners))
+			running := RunningNames("/proc")
+			for _, name := range []string{"nginx", "apache2", "mysqld", "mariadbd", "sshd"} {
+				t.Logf("호스트 프로세스 %s: %v", name, running[name])
+			}
+			return
+		}
+	}
+	t.Errorf("포트 %d를 찾지 못했다: %+v", port, listeners)
 }
