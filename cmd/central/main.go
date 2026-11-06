@@ -94,6 +94,7 @@ func serve(args []string) error {
 	var scenario *demo.Scenario
 	if *demoMode {
 		scenario = demo.New(time.Now().UTC())
+		config.LogStreamer = scenario.StreamLogs
 	}
 	app := central.NewServer(store, central.NewHub(), config)
 	if *demoMode {

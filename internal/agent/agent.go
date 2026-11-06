@@ -1,6 +1,6 @@
 // Package agent는 대상 서버에서 실행되어 상태를 수집하고 중앙 서버로 보낸다.
 //
-// 이 에이전트는 읽기만 한다. 컨테이너를 변경하는 코드와 명령을 받는 경로가 없다.
+// 이 에이전트는 읽기만 한다. 컨테이너를 변경하는 코드가 없고, 받을 수 있는 작업은 로그 조회뿐이다.
 package agent
 
 import (
@@ -57,6 +57,7 @@ type Docker interface {
 	Topology(ctx context.Context) (*protocol.Topology, error)
 	Stats(ctx context.Context, id string) (dockerapi.Stats, error)
 	Events(ctx context.Context, since time.Time, handle func(dockerapi.Event)) error
+	Logs(ctx context.Context, id string, options dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error
 }
 
 // ProbeConfig는 내부 응답 확인 대상이다. 주소는 서비스의 현재 컨테이너 IP로만 정해진다.
@@ -685,6 +686,7 @@ func (a *Agent) Run(ctx context.Context) error {
 
 	go a.sendLoop(ctx)
 	go a.watchEvents(ctx)
+	go a.pollTasks(ctx)
 	every := func(period time.Duration, task func(context.Context)) {
 		go func() {
 			ticker := time.NewTicker(period)

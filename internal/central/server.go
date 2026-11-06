@@ -26,6 +26,8 @@ type Config struct {
 	Listen            string
 	WebDir            string
 	DashboardPassword string
+	// LogStreamer는 로그를 가져오는 방법이다. 없으면 에이전트에 요청한다. 데모는 가짜 로그를 넣는다.
+	LogStreamer LogStreamer
 }
 
 // ValidateListen은 인증 없이 외부 주소에 바인딩하는 설정을 거부한다.
@@ -86,11 +88,16 @@ type Server struct {
 	store *Store
 	hub   *Hub
 	cfg   Config
+	logs  *LogRelay
 	now   func() time.Time
 }
 
 func NewServer(store *Store, hub *Hub, cfg Config) *Server {
-	return &Server{store: store, hub: hub, cfg: cfg, now: func() time.Time { return time.Now().UTC() }}
+	relay := NewLogRelay()
+	if cfg.LogStreamer == nil {
+		cfg.LogStreamer = relay.Stream
+	}
+	return &Server{store: store, hub: hub, cfg: cfg, logs: relay, now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Server) Handler() http.Handler {
@@ -101,6 +108,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/v1/servers/{id}/events", s.handleEvents)
 	api.HandleFunc("GET /api/v1/servers/{id}/gaps", s.handleGaps)
 	api.HandleFunc("GET /api/v1/servers/{id}/samples", s.handleSamples)
+	api.HandleFunc("GET /api/v1/servers/{id}/logs", s.handleLogs)
 	api.HandleFunc("GET /api/v1/stream", s.handleStream)
 	if s.cfg.WebDir != "" {
 		api.Handle("GET /", spaHandler(s.cfg.WebDir))
@@ -108,6 +116,8 @@ func (s *Server) Handler() http.Handler {
 
 	root := http.NewServeMux()
 	root.HandleFunc("POST /agent/v1/batches", s.handleBatch)
+	root.HandleFunc("GET /agent/v1/tasks", s.handleTaskPoll)
+	root.HandleFunc("POST /agent/v1/tasks/{id}/logs", s.handleLogChunk)
 	root.Handle("/", s.dashboardGuard(api))
 	return root
 }

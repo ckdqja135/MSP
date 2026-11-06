@@ -171,6 +171,46 @@ type Gap struct {
 	Dropped int       `json:"dropped,omitempty"`
 }
 
+// TaskKind는 중앙 서버가 에이전트에 요청할 수 있는 작업이다. 조회만 존재하고 변경 작업은 없다.
+type TaskKind string
+
+const TaskLogs TaskKind = "logs"
+
+type Task struct {
+	ID   string      `json:"id"`
+	Kind TaskKind    `json:"kind"`
+	Logs *LogRequest `json:"logs,omitempty"`
+}
+
+// LogRequest는 서비스 안의 컨테이너 로그를 요청한다. 에이전트는 자신의 구성에 있는 컨테이너만 읽는다.
+type LogRequest struct {
+	ServiceKey  string     `json:"service_key"`
+	ContainerID string     `json:"container_id,omitempty"`
+	Since       *time.Time `json:"since,omitempty"`
+	Until       *time.Time `json:"until,omitempty"`
+	Tail        int        `json:"tail,omitempty"`
+	Follow      bool       `json:"follow,omitempty"`
+	Query       string     `json:"query,omitempty"`
+}
+
+type LogLine struct {
+	At     time.Time `json:"at"`
+	Stream string    `json:"stream"`
+	Text   string    `json:"text"`
+}
+
+// LogChunk의 Dropped는 전송 한도를 넘어 버린 줄 수다. 누락을 화면에 드러내기 위한 값이다.
+type LogChunk struct {
+	Lines   []LogLine `json:"lines,omitempty"`
+	Dropped int       `json:"dropped,omitempty"`
+	Done    bool      `json:"done,omitempty"`
+	Error   string    `json:"error,omitempty"`
+}
+
+type ChunkAck struct {
+	Continue bool `json:"continue"`
+}
+
 type Vantage string
 
 const (

@@ -6,6 +6,7 @@ import { formatClock, formatDuration, formatSize, isLateArrival } from '../forma
 import { CATEGORY_LABEL, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
 import { StatusIcon } from './Icons'
+import { LogsPanel } from './LogsPanel'
 import { MetricsPanel } from './MetricsPanel'
 
 const ROW_HEIGHT = 26
@@ -213,7 +214,9 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
       {context.tab === 'metrics' && server && (
         <MetricsPanel server={server} topology={topology} context={context} gaps={flow.gaps} selectedEvent={selectedEvent} now={now} />
       )}
-      {context.tab === 'logs' && <p className="placeholder">로그 조회는 다음 단계에서 추가합니다.</p>}
+      {context.tab === 'logs' && server && (
+        <LogsPanel server={server} topology={topology} context={context} selectedEvent={selectedEvent} />
+      )}
     </section>
   )
 }

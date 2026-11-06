@@ -66,6 +66,19 @@ function EventDetail({ event, events }: { event: EventRow; events: EventRow[] })
           <button type="button" className="tool-button" onClick={() => updateContext({ target: `svc:${event.service_key}` })}>이 대상으로 좁히기</button>
         )}
         <button type="button" className="tool-button" onClick={moment}>이 시점 구조 보기</button>
+        {event.service_key && (
+          <button
+            type="button"
+            className="tool-button"
+            onClick={() => {
+              const from = new Date(at - 2 * 60_000).toISOString()
+              const to = new Date(Math.min(at + 2 * 60_000, Date.now())).toISOString()
+              updateContext({ target: `svc:${event.service_key}`, tab: 'logs', from, to, at: event.occurred_at, frozen: undefined })
+            }}
+          >
+            이 시점 로그 보기
+          </button>
+        )}
         <button type="button" className="tool-button" onClick={() => updateContext({ event: undefined })}>선택 해제</button>
       </div>
       <h3 className="nearby-title">같은 시간대 기록 (앞뒤 1분)</h3>

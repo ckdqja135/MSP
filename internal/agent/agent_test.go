@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,6 +33,14 @@ type fakeDocker struct {
 	topoErr    error
 	pingErr    error
 	eventsFn   func(ctx context.Context, since time.Time, handle func(dockerapi.Event)) error
+	logsFn     func(ctx context.Context, id string, options dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error
+}
+
+func (f *fakeDocker) Logs(ctx context.Context, id string, options dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+	if f.logsFn != nil {
+		return f.logsFn(ctx, id, options, emit)
+	}
+	return nil
 }
 
 func (f *fakeDocker) Ping(context.Context) error {
@@ -106,6 +116,7 @@ func (g *gate) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 type harness struct {
+	url    string
 	agent  *Agent
 	docker *fakeDocker
 	host   *fakeHost
@@ -157,7 +168,7 @@ func newHarness(t *testing.T, spoolBytes int64, probes ...ProbeConfig) *harness 
 	}
 	clock := &testClock{t: testStart}
 	agent.now = clock.now
-	return &harness{agent: agent, docker: docker, host: host, store: store, gate: g, clock: clock}
+	return &harness{url: ts.URL, agent: agent, docker: docker, host: host, store: store, gate: g, clock: clock}
 }
 
 // drain은 대기열이 빌 때까지 보낸다.
@@ -799,6 +810,244 @@ func TestTopologyIsResentPeriodicallyEvenWhenUnchanged(t *testing.T) {
 	h.agent.collectTopology(ctx)
 	if h.agent.pending.Topology == nil {
 		t.Error("주기적 재전송이 없다")
+	}
+}
+
+// readLogs는 화면처럼 로그 스트림을 읽어 끝날 때까지 모은다.
+func readLogs(t *testing.T, ctx context.Context, url string) []protocol.LogChunk {
+	t.Helper()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var chunks []protocol.LogChunk
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 1<<20), 1<<24)
+	for scanner.Scan() {
+		line, found := strings.CutPrefix(scanner.Text(), "data: ")
+		if !found {
+			continue
+		}
+		var chunk protocol.LogChunk
+		if err := json.Unmarshal([]byte(line), &chunk); err != nil {
+			t.Fatal(err)
+		}
+		chunks = append(chunks, chunk)
+		if chunk.Done {
+			break
+		}
+	}
+	return chunks
+}
+
+func (h *harness) startPolling(t *testing.T) context.CancelFunc {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go h.agent.pollTasks(ctx)
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		chunks := readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=probe/check")
+		if len(chunks) == 1 && !strings.Contains(chunks[0].Error, "연결되어 있지 않아") {
+			return cancel
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("에이전트가 작업을 받지 않았다")
+	return cancel
+}
+
+func TestLogsAreMaskedBeforeLeavingTheAgent(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	var gotID atomic.Value
+	h.docker.logsFn = func(_ context.Context, id string, _ dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+		gotID.Store(id)
+		emit(dockerapi.LogEntry{At: testStart, Stream: "stdout", Text: "login password=abc123 ok"})
+		emit(dockerapi.LogEntry{At: testStart, Stream: "stderr", Text: "Authorization: Bearer abc123"})
+		return nil
+	}
+	h.startPolling(t)
+	chunks := readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=blog/api")
+
+	body, _ := json.Marshal(chunks)
+	if strings.Contains(string(body), "abc123") {
+		t.Errorf("민감정보가 전달됐다: %s", body)
+	}
+	if !strings.Contains(string(body), "가려짐") {
+		t.Errorf("가림 표시가 없다: %s", body)
+	}
+	if gotID.Load() != "aaa" {
+		t.Errorf("다른 컨테이너를 읽었다: %v", gotID.Load())
+	}
+}
+
+func TestSearchCannotFindMaskedValues(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	h.docker.logsFn = func(_ context.Context, _ string, _ dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+		emit(dockerapi.LogEntry{Text: "password=abc123"})
+		emit(dockerapi.LogEntry{Text: "ERROR something failed"})
+		return nil
+	}
+	h.startPolling(t)
+	count := func(query string) int {
+		total := 0
+		for _, chunk := range readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=blog/api&q="+query) {
+			total += len(chunk.Lines)
+		}
+		return total
+	}
+	if got := count("abc123"); got != 0 {
+		t.Errorf("가려진 값을 검색으로 찾았다: %d", got)
+	}
+	if got := count("error"); got != 1 {
+		t.Errorf("검색 결과 = %d", got)
+	}
+}
+
+func TestLogStreamStopsWhenViewerLeaves(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	stopped := make(chan struct{})
+	started := make(chan struct{})
+	var once sync.Once
+	h.docker.logsFn = func(ctx context.Context, _ string, options dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+		if !options.Follow {
+			return nil
+		}
+		defer close(stopped)
+		for {
+			once.Do(func() { close(started) })
+			if !emit(dockerapi.LogEntry{Text: "line"}) {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}
+	h.startPolling(t)
+
+	viewer, leave := context.WithCancel(context.Background())
+	defer leave()
+	go func() {
+		request, _ := http.NewRequestWithContext(viewer, http.MethodGet, h.url+"/api/v1/servers/home-1/logs?service=blog/api&follow=true", nil)
+		if response, err := http.DefaultClient.Do(request); err == nil {
+			io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+		}
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("로그 스트림이 시작되지 않았다")
+	}
+	leave()
+	select {
+	case <-stopped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("화면을 떠났는데 에이전트가 계속 읽는다")
+	}
+}
+
+func TestLogRequestOutsideTopologyIsRefused(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	called := atomic.Bool{}
+	h.docker.logsFn = func(context.Context, string, dockerapi.LogOptions, func(dockerapi.LogEntry) bool) error {
+		called.Store(true)
+		return nil
+	}
+	h.startPolling(t)
+	called.Store(false)
+	for _, query := range []string{"service=other/service", "service=blog/api&container=bbb"} {
+		chunks := readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?"+query)
+		if len(chunks) != 1 || !strings.Contains(chunks[0].Error, "구성에 없는") {
+			t.Errorf("%s: %+v", query, chunks)
+		}
+	}
+	if called.Load() {
+		t.Error("구성에 없는 컨테이너의 로그를 읽었다")
+	}
+}
+
+func TestLogsWithoutAgentFailImmediately(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	started := time.Now()
+	chunks := readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=blog/api")
+	if len(chunks) != 1 || !chunks[0].Done || !strings.Contains(chunks[0].Error, "연결되어 있지 않아") {
+		t.Errorf("chunks = %+v", chunks)
+	}
+	if time.Since(started) > time.Second {
+		t.Errorf("바로 실패하지 않았다: %v", time.Since(started))
+	}
+}
+
+func TestExcessLogLinesAreCountedNotHidden(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(context.Background())
+	const total = 5000
+	h.docker.logsFn = func(_ context.Context, _ string, _ dockerapi.LogOptions, emit func(dockerapi.LogEntry) bool) error {
+		for i := 0; i < total; i++ {
+			if !emit(dockerapi.LogEntry{Text: "line"}) {
+				return nil
+			}
+		}
+		return nil
+	}
+	h.startPolling(t)
+	lines, dropped := 0, 0
+	for _, chunk := range readLogs(t, context.Background(), h.url+"/api/v1/servers/home-1/logs?service=blog/api") {
+		lines += len(chunk.Lines)
+		dropped += chunk.Dropped
+	}
+	if lines+dropped != total {
+		t.Errorf("lines %d + dropped %d != %d", lines, dropped, total)
+	}
+	if dropped == 0 {
+		t.Error("한도를 넘었는데 누락이 표시되지 않았다")
+	}
+}
+
+func TestUnknownTaskIsNeverExecuted(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	served := make(chan struct{}, 1)
+	central := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case served <- struct{}{}:
+			json.NewEncoder(w).Encode(protocol.Task{ID: "x", Kind: "exec", Logs: &protocol.LogRequest{ServiceKey: "blog/api"}})
+		default:
+			w.WriteHeader(http.StatusNoContent)
+		}
+	}))
+	defer central.Close()
+	h.agent.cfg.CentralURL = central.URL
+	called := atomic.Bool{}
+	h.docker.logsFn = func(context.Context, string, dockerapi.LogOptions, func(dockerapi.LogEntry) bool) error {
+		called.Store(true)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	h.agent.pollTasks(ctx)
+	if called.Load() {
+		t.Error("알 수 없는 작업을 실행했다")
+	}
+	if len(served) != 1 {
+		t.Error("작업을 받지 않았다")
 	}
 }
 

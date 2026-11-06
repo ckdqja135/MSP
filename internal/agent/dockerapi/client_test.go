@@ -273,3 +273,97 @@ func TestEventsKeepOnlyAllowedAttributes(t *testing.T) {
 		t.Errorf("허용하지 않은 속성이 전달됐다: %s", body)
 	}
 }
+
+func frame(stream byte, text string) []byte {
+	header := []byte{stream, 0, 0, 0, 0, 0, 0, byte(len(text))}
+	return append(header, []byte(text)...)
+}
+
+func TestLogsDemultiplexesFramesAndPartialLines(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/"+testID+"/json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"Config":{"Tty":false}}`))
+	})
+	mux.HandleFunc("GET /containers/"+testID+"/logs", func(w http.ResponseWriter, r *http.Request) {
+		query := r.URL.Query()
+		if query.Get("timestamps") != "true" || query.Get("tail") != "10" || query.Get("stderr") != "true" {
+			t.Errorf("query = %s", r.URL.RawQuery)
+		}
+		w.Write(frame(1, "2026-11-06T03:00:00.5Z hello "))
+		w.Write(frame(2, "2026-11-06T03:00:01Z boom\n"))
+		w.Write(frame(1, "world\n2026-11-06T03:00:02Z last line"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var entries []LogEntry
+	err := newClient(srv.URL, http.DefaultTransport).Logs(context.Background(), testID, LogOptions{Tail: 10}, func(entry LogEntry) bool {
+		entries = append(entries, entry)
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 3 {
+		t.Fatalf("entries = %+v", entries)
+	}
+	if entries[0].Stream != "stderr" || entries[0].Text != "boom" || entries[0].At.Second() != 1 {
+		t.Errorf("stderr = %+v", entries[0])
+	}
+	if entries[1].Stream != "stdout" || entries[1].Text != "hello world" {
+		t.Errorf("이어진 줄 = %+v", entries[1])
+	}
+	if entries[2].Text != "last line" {
+		t.Errorf("줄바꿈 없는 끝 = %+v", entries[2])
+	}
+}
+
+func TestLogsReadsTTYWithoutFrames(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/"+testID+"/json", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte(`{"Config":{"Tty":true}}`))
+	})
+	mux.HandleFunc("GET /containers/"+testID+"/logs", func(w http.ResponseWriter, _ *http.Request) {
+		w.Write([]byte("2026-11-06T03:00:00Z one\r\n2026-11-06T03:00:01Z two\n"))
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	var texts []string
+	err := newClient(srv.URL, http.DefaultTransport).Logs(context.Background(), testID, LogOptions{}, func(entry LogEntry) bool {
+		texts = append(texts, entry.Text)
+		return true
+	})
+	if err != nil || strings.Join(texts, ",") != "one,two" {
+		t.Errorf("texts = %v err = %v", texts, err)
+	}
+}
+
+func TestLogsReportsUnsupportedDriver(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /containers/"+testID+"/json", func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{}`)) })
+	mux.HandleFunc("GET /containers/"+testID+"/logs", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotImplemented)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	err := newClient(srv.URL, http.DefaultTransport).Logs(context.Background(), testID, LogOptions{}, func(LogEntry) bool { return true })
+	if !errors.Is(err, ErrLogsUnavailable) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+func TestLogsCapsVeryLongLines(t *testing.T) {
+	long := strings.Repeat("x", maxLogLineBytes*3)
+	var entry LogEntry
+	err := readRawLogs(strings.NewReader("2026-11-06T03:00:00Z "+long+"\n"), func(got LogEntry) bool {
+		entry = got
+		return true
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entry.Text) > maxLogLineBytes {
+		t.Errorf("길이 = %d", len(entry.Text))
+	}
+}

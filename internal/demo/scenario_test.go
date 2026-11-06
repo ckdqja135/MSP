@@ -3,6 +3,7 @@ package demo
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,5 +153,29 @@ func TestSeedProducesExpectedServerState(t *testing.T) {
 	}
 	if servers[0].Reachability.State != "ok" || servers[0].Mode != protocol.ModeDemo {
 		t.Errorf("server = %+v", servers[0])
+	}
+}
+
+func TestDemoLogsAreMaskedAndMatchTheScenario(t *testing.T) {
+	s := New(now)
+	lines := s.logLines("blog/api", "", s.origin, s.origin.Add(cycle))
+	if len(lines) == 0 {
+		t.Fatal("로그가 없다")
+	}
+	sawFatal := false
+	for _, line := range lines {
+		if strings.Contains(line.Text, "demo-password") || strings.Contains(line.Text, "demo-token") {
+			t.Errorf("민감정보가 남았다: %s", line.Text)
+		}
+		sawFatal = sawFatal || strings.Contains(line.Text, "FATAL")
+	}
+	if !sawFatal {
+		t.Error("장애 구간 로그가 없다")
+	}
+	if got := s.logLines("blog/migrate", "", s.origin, s.origin.Add(time.Minute)); len(got) != 0 {
+		t.Errorf("실행 중이 아닌 컨테이너의 로그를 만들었다: %+v", got[0])
+	}
+	if got := s.logLines("blog/api", "fatal", s.origin, s.origin.Add(cycle)); len(got) == 0 || len(got) == len(lines) {
+		t.Errorf("검색 결과 = %d", len(got))
 	}
 }
