@@ -686,7 +686,8 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
   }, [activities, selectedActivity, layers.activity, layers.requests])
 
   // 재생 중에는 패킷이 지나간 장비만 또렷하게 보이고, 화면은 지금 패킷의 경로를 따라간다.
-  const playing = Boolean(player && player.status !== 'idle' && player.frame)
+  // 실시간 모드에서 아직 요청이 없으면 가릴 것도 없으므로 평소 화면을 그대로 둔다.
+  const playing = Boolean(player && player.status !== 'idle' && player.frame && (player.timeline?.packets.length ?? 0) > 0)
   const frame = playing ? player!.frame : undefined
   const flowRevealed = useMemo(
     () => new Set((frame?.revealed ?? []).map((id) => visibleDevice(scene, id) ?? id)),
@@ -981,7 +982,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
       </Panel>
       {player?.script && (
         <Panel position="top-right" className={`map-flow-tag ${player.script.source} ${server.mode === 'demo' ? 'demo' : ''}`} role="status">
-          {flowTag(player.script.source, server.mode === 'demo')}
+          {flowTag(player.script.source, server.mode === 'demo')}{player.live ? ' · 실시간' : ''}
         </Panel>
       )}
       {highlight.note && !player && (

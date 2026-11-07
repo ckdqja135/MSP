@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { buildTimeline, frameAt, hopProgress, nextArrival, overviewFrame, previousStepStart, type FlowFrame, type FlowScript, type Timeline } from './flow'
 
-export type PlayStatus = 'idle' | 'playing' | 'paused' | 'done'
+// waiting은 실시간 모드에서 도착한 요청을 모두 보여주고 다음 요청을 기다리는 상태다.
+export type PlayStatus = 'idle' | 'playing' | 'paused' | 'done' | 'waiting'
 export const SPEEDS = [0.5, 1, 2]
+// 실시간 모드에서 이보다 많이 밀리면 최근 요청으로 건너뛴다. 실시간이 점점 늦어지지 않게 하기 위해서다.
+const MAX_LIVE_LAG_MS = 15_000
 
 export interface FlowPlayer {
   script?: FlowScript
@@ -17,6 +20,11 @@ export interface FlowPlayer {
   reset: () => void
   cycleSpeed: () => void
   seekPacket: (packet: number) => void
+  live: boolean
+  // 밀려서 건너뛴 요청 수다.
+  skipped: number
+  startLive: (script: FlowScript) => void
+  extendLive: (script: FlowScript, dropped: number) => void
 }
 
 const sameFrame = (a: FlowFrame | undefined, b: FlowFrame) =>
@@ -28,6 +36,11 @@ export function useFlowPlayer(latest: FlowScript | undefined): FlowPlayer {
   const [status, setStatus] = useState<PlayStatus>('idle')
   const [speed, setSpeed] = useState(1)
   const [frame, setFrame] = useState<FlowFrame | undefined>()
+  const [live, setLive] = useState(false)
+  const [skipped, setSkipped] = useState(0)
+  const liveRef = useRef(false)
+  const statusRef = useRef<PlayStatus>('idle')
+  statusRef.current = status
   const script = frozen ?? latest
   const timeline = useMemo(() => (script ? buildTimeline(script) : undefined), [script])
 
@@ -59,7 +72,7 @@ export function useFlowPlayer(latest: FlowScript | undefined): FlowPlayer {
       if (clock.current >= active.total) {
         clock.current = active.total
         publish(frameAt(active, clock.current))
-        setStatus('done')
+        setStatus(liveRef.current ? 'waiting' : 'done')
         return
       }
       publish(frameAt(active, clock.current))
@@ -82,10 +95,11 @@ export function useFlowPlayer(latest: FlowScript | undefined): FlowPlayer {
   }, [latest, publish])
 
   const toggle = useCallback(() => {
-    if (status === 'playing') {
+    if (status === 'playing' || status === 'waiting') {
       setStatus('paused')
     } else if (status === 'paused') {
-      setStatus('playing')
+      const active = timelineRef.current
+      setStatus(liveRef.current && active && clock.current >= active.total ? 'waiting' : 'playing')
     } else if (begin()) {
       setStatus('playing')
     }
@@ -110,10 +124,40 @@ export function useFlowPlayer(latest: FlowScript | undefined): FlowPlayer {
   const reset = useCallback(() => {
     clock.current = 0
     stopAt.current = null
+    liveRef.current = false
+    setLive(false)
+    setSkipped(0)
     setFrozen(undefined)
     setFrame(undefined)
     setStatus('idle')
   }, [])
+
+  // extendLive는 새 요청을 시간표 뒤에 붙인다. 앞에서 뺀 단계만큼 시각을 당겨 보던 곳을 그대로 이어 간다.
+  const extendLive = useCallback((next: FlowScript, dropped: number) => {
+    const previous = timelineRef.current
+    const fixed = buildTimeline(next)
+    if (previous && dropped > 0) clock.current = Math.max(0, clock.current - (previous.stepStarts[dropped] ?? previous.total))
+    // 일시정지 중에는 건너뛰지 않는다. 멈춘 화면이 바뀌면 안 된다.
+    const catchUp = fixed.stepStarts.findIndex((start) => fixed.total - start <= MAX_LIVE_LAG_MS)
+    if (statusRef.current !== 'paused' && catchUp > 0 && clock.current < fixed.stepStarts[catchUp]) {
+      const passed = fixed.stepStarts.filter((start) => start <= clock.current).length
+      setSkipped((count) => count + catchUp - Math.max(passed - 1, 0))
+      clock.current = fixed.stepStarts[catchUp]
+    }
+    liveRef.current = true
+    stopAt.current = null
+    setFrozen(next)
+    timelineRef.current = fixed
+    publish(frameAt(fixed, clock.current))
+    setStatus((current) => (current === 'paused' ? 'paused' : clock.current < fixed.total ? 'playing' : 'waiting'))
+  }, [publish])
+
+  const startLive = useCallback((next: FlowScript) => {
+    clock.current = 0
+    setSkipped(0)
+    setLive(true)
+    extendLive(next, 0)
+  }, [extendLive])
 
   const cycleSpeed = useCallback(() => setSpeed((current) => SPEEDS[(SPEEDS.indexOf(current) + 1) % SPEEDS.length]), [])
 
@@ -144,5 +188,9 @@ export function useFlowPlayer(latest: FlowScript | undefined): FlowPlayer {
     reset,
     cycleSpeed,
     seekPacket,
+    live,
+    skipped,
+    startLive,
+    extendLive,
   }
 }

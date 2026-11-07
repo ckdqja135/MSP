@@ -165,9 +165,11 @@ interface Props {
   source: FlowSource
   sources: Record<FlowSource, boolean>
   onSource: (source: FlowSource) => void
+  liveAvailable: boolean
+  onLive: (on: boolean) => void
 }
 
-export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed, player, source, sources, onSource }: Props) {
+export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed, player, source, sources, onSource, liveAvailable, onLive }: Props) {
   const selectedCategories = context.categories ? context.categories.split(',') : Object.keys(CATEGORY_LABEL)
   const toggleCategory = (category: string) => {
     const next = selectedCategories.includes(category)
@@ -274,7 +276,7 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
       </div>
       {!collapsed && context.tab === 'play' && (
         <>
-          <FlowControls player={player} source={source} sources={sources} onSource={onSource} demo={meta?.mode === 'demo'} />
+          <FlowControls player={player} source={source} sources={sources} onSource={onSource} demo={meta?.mode === 'demo'} liveAvailable={liveAvailable} onLive={onLive} />
           <FlowPacketTable player={player} source={source} />
         </>
       )}

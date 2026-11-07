@@ -8,7 +8,7 @@ import { DetailPanel } from './components/DetailPanel'
 import { FlowPanel, PLAY_LABEL } from './components/FlowPlayback'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
 import { timeMode, timeWindow, updateContext, useConsoleContext } from './context'
-import { observedScript, requestScript, simulationScript, type FlowSource } from './flow'
+import { appendLiveSteps, liveRequestScript, observedScript, requestScript, simulationScript, type FlowSource, type FlowStep } from './flow'
 import { formatDateTime } from './format'
 import { useFlowPlayer } from './useFlowPlayer'
 import { useFlowRecords } from './useFlowRecords'
@@ -110,7 +110,8 @@ export function App() {
   const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, context.target) : undefined), [topology.data, context.target])
   const [sourceChoice, setSourceChoice] = useState<FlowSource | undefined>()
   const scripts = { requests: requested, observed, simulation }
-  const source: FlowSource = sourceChoice && scripts[sourceChoice] ? sourceChoice : requested ? 'requests' : observed ? 'observed' : 'simulation'
+  // 시뮬레이션은 직접 골랐을 때만 보여준다. 실제 데이터가 없을 때 예시로 대신하면 실제처럼 보이기 때문이다.
+  const source: FlowSource = sourceChoice ?? (!requested && observed ? 'observed' : 'requests')
   const player = useFlowPlayer(scripts[source])
   const resetPlayer = player.reset
   useEffect(() => {
@@ -119,6 +120,32 @@ export function App() {
   useEffect(() => {
     resetPlayer()
   }, [source, resetPlayer])
+
+  // 실시간 모드는 켠 뒤에 들어온 요청만 차례로 보여준다.
+  const liveSteps = useRef<FlowStep[]>([])
+  const liveLastID = useRef(0)
+  const setLiveFlow = (on: boolean) => {
+    if (!on) {
+      player.reset()
+      return
+    }
+    liveSteps.current = []
+    liveLastID.current = requestRows.reduce((max, row) => Math.max(max, row.id), 0)
+    player.startLive(liveRequestScript([], demo))
+  }
+  useEffect(() => {
+    if (!player.live || !topology.data) return
+    const next = appendLiveSteps(liveSteps.current, requestRows, topology.data, liveLastID.current)
+    if (next.lastID === liveLastID.current) return
+    liveSteps.current = next.steps
+    liveLastID.current = next.lastID
+    player.extendLive(liveRequestScript(next.steps, demo), next.dropped)
+    // 요청 목록이 바뀔 때만 덧붙인다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requestRows, player.live])
+  useEffect(() => {
+    if (!live) resetPlayer()
+  }, [live, resetPlayer])
 
   // 선택한 것이 없으면 상세 패널을 닫아 그 폭을 구조도에 준다.
   const detailOpen = flowTab || Boolean(context.target || context.event)
@@ -179,9 +206,9 @@ export function App() {
             <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} player={flowTab ? player : undefined} requests={requestRows} flowPlayLabel={PLAY_LABEL[player.status]} onFlowPlay={player.script ? playFromMap : undefined} />
           )}
         </section>
-        {flowTab && <FlowPanel player={player} />}
+        {flowTab && <FlowPanel player={player} source={source} />}
         {detailOpen && !flowTab && <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />}
-        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ requests: Boolean(requested), observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} />
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ requests: true, observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} liveAvailable={live} onLive={setLiveFlow} />
       </main>
     </div>
   )

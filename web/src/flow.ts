@@ -334,7 +334,7 @@ export function upstreamDevice(upstream: string, topology: Topology): { id: stri
 
 const MAX_REQUEST_STEPS = 8
 
-function requestStep(request: RequestRow, topology: Topology): FlowStep {
+export function requestStep(request: RequestRow, topology: Topology): FlowStep {
   const label = `${request.method} ${request.path}`
   const entry = entryDevice(request.service, topology)
   const inward = entry === 'host' ? ['internet', 'host'] : ['internet', 'host', entry]
@@ -390,6 +390,33 @@ export function requestScript(requests: RequestRow[], topology: Topology, demo =
       ['간격', '실제 시간과 다릅니다'],
     ],
   }
+}
+
+// 실시간으로 보여주는 요청의 수다. 넘으면 오래된 것부터 뺀다.
+export const LIVE_MAX_STEPS = 30
+
+export function liveRequestScript(steps: FlowStep[], demo = false): FlowScript {
+  return {
+    source: 'requests',
+    title: '실시간 API 요청',
+    note: demo
+      ? '데모용 가짜 요청을 들어오는 대로 보여줍니다.'
+      : '접근 로그에 새로 적힌 요청을 들어오는 대로 보여줍니다. 수집과 전송 때문에 몇 초 늦게 나타납니다.',
+    steps,
+    facts: [
+      ['보여준 요청', `${steps.length}건`],
+      ['지연', '실제보다 몇 초 늦음'],
+    ],
+  }
+}
+
+// appendLiveSteps는 마지막으로 본 요청 뒤에 들어온 것만 덧붙인다. 넘치면 앞에서 뺀 수를 함께 돌려준다.
+export function appendLiveSteps(steps: FlowStep[], requests: RequestRow[], topology: Topology, lastID: number): { steps: FlowStep[]; dropped: number; lastID: number } {
+  const fresh = requests.filter((request) => request.id > lastID).sort((a, b) => a.id - b.id)
+  if (fresh.length === 0) return { steps, dropped: 0, lastID }
+  const all = [...steps, ...fresh.map((request) => requestStep(request, topology))]
+  const dropped = Math.max(0, all.length - LIVE_MAX_STEPS)
+  return { steps: all.slice(dropped), dropped, lastID: fresh[fresh.length - 1].id }
 }
 
 const STEP_INTRO_MS = 1100

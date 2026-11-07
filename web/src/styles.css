@@ -1899,3 +1899,14 @@ button.packet-row.current {
 .line.request {
   border-top: 2px dashed #1f6fe0;
 }
+
+.flow-actions .live-button {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+.flow-actions .live-button.active {
+  background: var(--critical);
+  border-color: var(--critical);
+  color: #fff;
+}

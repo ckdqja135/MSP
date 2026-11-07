@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Container, HostService, Probe, Project, Relation, RequestRow, Service, Topology } from './api'
-import { buildTimeline, entryDevice, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScript, simulationScript, upstreamDevice } from './flow'
+import { appendLiveSteps, buildTimeline, entryDevice, LIVE_MAX_STEPS, liveRequestScript, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScript, simulationScript, upstreamDevice } from './flow'
 
 const container = (overrides: Partial<Container> = {}): Container =>
   ({ id: 'c', name: 'c', image: 'app:1', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: '', service: '', metrics: {}, ...overrides }) as Container
@@ -280,5 +280,53 @@ describe('API 요청', () => {
     expect(upstreamDevice('127.0.0.1:18080', both)?.id).toBe('svc:blog/web')
     expect(upstreamDevice('127.0.0.1:9999', both)).toBeUndefined()
     expect(upstreamDevice('', both)).toBeUndefined()
+  })
+})
+
+describe('실시간 API 요청', () => {
+  const request = (id: number): RequestRow => ({
+    id, at: new Date(Date.UTC(2026, 10, 6, 3, 0, id)).toISOString(), service: 'nginx', method: 'GET', path: `/p/${id}`, proto: 'HTTP/1.1', status: 200, bytes: 10, duration_ms: 5, upstream: '', upstream_ms: null,
+  })
+  const data = topology([service('blog/api')], [], [nginx])
+
+  it('본 요청 뒤에 들어온 것만 순서대로 덧붙인다', () => {
+    const first = appendLiveSteps([], [request(3), request(2), request(1)], data, 1)
+    expect(first.steps.map((step) => step.id)).toEqual(['2', '3'])
+    expect(first.lastID).toBe(3)
+    const second = appendLiveSteps(first.steps, [request(4), request(3), request(2)], data, first.lastID)
+    expect(second.steps.map((step) => step.id)).toEqual(['2', '3', '4'])
+    expect(second.dropped).toBe(0)
+  })
+
+  it('새 요청이 없으면 그대로 둔다', () => {
+    const result = appendLiveSteps([], [request(1)], data, 5)
+    expect(result).toEqual({ steps: [], dropped: 0, lastID: 5 })
+  })
+
+  it('넘치면 오래된 것부터 빼고 뺀 수를 알려준다', () => {
+    const many = Array.from({ length: LIVE_MAX_STEPS + 4 }, (_, index) => request(index + 1))
+    const result = appendLiveSteps([], many, data, 0)
+    expect(result.steps).toHaveLength(LIVE_MAX_STEPS)
+    expect(result.dropped).toBe(4)
+    expect(result.steps[0].id).toBe('5')
+  })
+
+  it('요청이 아직 없어도 시간표가 깨지지 않는다', () => {
+    const timeline = buildTimeline(liveRequestScript([]))
+    expect(timeline.total).toBe(0)
+    expect(frameAt(timeline, 0).delivered).toBe(0)
+    expect(hopProgress(timeline, 0)).toBe(1)
+  })
+
+  it('앞에 덧붙여도 지난 구간의 시각은 그대로다', () => {
+    const one = buildTimeline(liveRequestScript(appendLiveSteps([], [request(1)], data, 0).steps))
+    const two = buildTimeline(liveRequestScript(appendLiveSteps(appendLiveSteps([], [request(1)], data, 0).steps, [request(2)], data, 1).steps))
+    expect(two.stepStarts[0]).toBe(one.stepStarts[0])
+    expect(two.stepStarts[1]).toBe(one.total)
+  })
+
+  it('데모와 실제를 구분해 말한다', () => {
+    expect(liveRequestScript([], true).note).toContain('가짜')
+    expect(liveRequestScript([]).note).toContain('늦게')
   })
 })
