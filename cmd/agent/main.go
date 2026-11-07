@@ -27,6 +27,7 @@ type fileConfig struct {
 	DiskPath     string                      `json:"disk_path"`
 	Probes       []agent.ProbeConfig         `json:"probes"`
 	HostServices []agent.DeclaredHostService `json:"host_services"`
+	AccessLogs   []agent.AccessLogConfig     `json:"access_logs"`
 }
 
 func loadToken(config fileConfig) (string, error) {
@@ -80,6 +81,7 @@ func run() error {
 		SpoolBytes:   config.SpoolMaxMB << 20,
 		Probes:       config.Probes,
 		HostServices: config.HostServices,
+		AccessLogs:   config.AccessLogs,
 	}, dockerapi.New(config.DockerSocket), agent.SystemHost{DiskPath: config.DiskPath})
 	if err != nil {
 		return err

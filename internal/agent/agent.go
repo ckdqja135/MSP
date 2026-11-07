@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ckdqja135/MSP/internal/agent/accesslog"
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
 	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/ckdqja135/MSP/internal/probe"
@@ -39,6 +40,9 @@ const (
 	temperatureEvery = 30 * time.Second
 	topologyEvery    = 60 * time.Second
 	probeEvery       = 30 * time.Second
+	accessLogEvery   = 2 * time.Second
+	// 한 번 전송에 담는 요청의 상한이다. 요청이 몰려도 수집이 서버에 부담을 주지 않게 한다.
+	maxRequestsPerFlush = 300
 	// 스냅샷이 전송 대기 초과로 사라져도 복구되도록 구성이 같아도 주기적으로 다시 보낸다.
 	topologyResendEvery = 5 * time.Minute
 
@@ -75,6 +79,12 @@ type DeclaredHostService struct {
 	Ports []int  `json:"ports"`
 }
 
+// AccessLogConfig는 실제 요청을 읽을 프록시 접근 로그다. Service는 그 프록시의 이름이다.
+type AccessLogConfig struct {
+	Service string `json:"service"`
+	Path    string `json:"path"`
+}
+
 type Config struct {
 	CentralURL   string
 	ServerID     string
@@ -83,6 +93,7 @@ type Config struct {
 	SpoolBytes   int64
 	Probes       []ProbeConfig
 	HostServices []DeclaredHostService
+	AccessLogs   []AccessLogConfig
 }
 
 // ValidateCentralURL은 토큰이 평문으로 나가는 설정을 거부한다. 같은 장비 안의 시험만 예외로 둔다.
@@ -147,6 +158,10 @@ type Agent struct {
 
 	topologyDirty chan struct{}
 	flushSoon     chan struct{}
+	accessTailers []accessTailer
+	// 상한을 넘겨 버린 요청 수다. 다음 전송 때 공백으로 남긴다.
+	requestsDropped int
+	requestsDropAt  time.Time
 }
 
 func New(cfg Config, docker Docker, host HostReader) (*Agent, error) {
@@ -182,7 +197,74 @@ func New(cfg Config, docker Docker, host HostReader) (*Agent, error) {
 		tempUnknown:   true,
 		topologyDirty: make(chan struct{}, 1),
 		flushSoon:     make(chan struct{}, 1),
+		accessTailers: newAccessTailers(cfg.AccessLogs),
 	}, nil
+}
+
+func newAccessTailers(configs []AccessLogConfig) []accessTailer {
+	tailers := make([]accessTailer, 0, len(configs))
+	for _, config := range configs {
+		tailers = append(tailers, accessTailer{service: config.Service, tailer: accesslog.NewTailer(config.Path)})
+	}
+	return tailers
+}
+
+type accessTailer struct {
+	service string
+	tailer  *accesslog.Tailer
+}
+
+// collectRequests는 접근 로그에 새로 적힌 요청을 읽는다. 상한을 넘으면 버리고 버린 수를 기록한다.
+func (a *Agent) collectRequests(context.Context) {
+	now := a.now()
+	var requests []protocol.Request
+	var failure error
+	for _, source := range a.accessTailers {
+		lines, err := source.tailer.Next()
+		if err != nil {
+			failure = err
+			continue
+		}
+		for _, line := range lines {
+			if request, ok := accesslog.Parse(line, source.service); ok {
+				requests = append(requests, request)
+			}
+		}
+	}
+
+	a.mu.Lock()
+	a.setCollector("access_log", now, failure)
+	room := maxRequestsPerFlush - len(a.pending.Requests)
+	if room < 0 {
+		room = 0
+	}
+	if len(requests) > room {
+		if a.requestsDropped == 0 {
+			a.requestsDropAt = now
+		}
+		a.requestsDropped += len(requests) - room
+		requests = requests[:room]
+	}
+	a.pending.Requests = append(a.pending.Requests, requests...)
+	if a.requestsDropped > 0 && len(a.pending.Requests) < maxRequestsPerFlush {
+		a.pending.Gaps = append(a.pending.Gaps, protocol.Gap{
+			Source: "access_log", From: a.requestsDropAt, To: now,
+			Reason: "요청이 많아 일부를 기록하지 않았습니다", Dropped: a.requestsDropped,
+		})
+		a.requestsDropped = 0
+	}
+	a.mu.Unlock()
+	if len(requests) > 0 {
+		a.requestFlush()
+	}
+}
+
+// requestFlush는 요청이 들어왔을 때 전송을 앞당긴다. 화면에 요청이 늦게 나타나지 않게 하기 위해서다.
+func (a *Agent) requestFlush() {
+	select {
+	case a.flushSoon <- struct{}{}:
+	default:
+	}
 }
 
 func (a *Agent) setCollector(name string, at time.Time, err error) {
@@ -657,7 +739,7 @@ func (a *Agent) flush(ctx context.Context, withHeartbeat bool) error {
 		gaps = append(gaps, protocol.Gap{
 			Source: "spool", From: batch.SentAt, To: now,
 			Reason:  "전송 대기열에 저장하지 못해 데이터를 버렸습니다",
-			Dropped: len(batch.Events) + len(batch.Samples),
+			Dropped: len(batch.Events) + len(batch.Samples) + len(batch.Requests),
 		})
 	}
 	if len(gaps) > 0 {
@@ -771,6 +853,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	every(diskEvery, a.collectDisk)
 	every(temperatureEvery, a.collectTemperature)
 	every(probeEvery, a.runProbes)
+	if len(a.accessTailers) > 0 {
+		a.collectRequests(ctx)
+		every(accessLogEvery, a.collectRequests)
+	}
 
 	heartbeat := time.NewTicker(heartbeatEvery)
 	defer heartbeat.Stop()

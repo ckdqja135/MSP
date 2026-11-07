@@ -1,19 +1,21 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { fetchEvents, fetchMeta, fetchServers, fetchTopology } from './api'
+import { fetchEvents, fetchMeta, fetchRequests, fetchServers, fetchTopology, type RequestRow } from './api'
 import { BottomPanel } from './components/BottomPanel'
 import { TopBar } from './components/TopBar'
 import { Explorer } from './components/Explorer'
 import { DetailPanel } from './components/DetailPanel'
 import { FlowPanel, PLAY_LABEL } from './components/FlowPlayback'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
-import { timeMode, updateContext, useConsoleContext } from './context'
-import { observedScript, simulationScript, type FlowSource } from './flow'
+import { timeMode, timeWindow, updateContext, useConsoleContext } from './context'
+import { observedScript, requestScript, simulationScript, type FlowSource } from './flow'
 import { formatDateTime } from './format'
 import { useFlowPlayer } from './useFlowPlayer'
 import { useFlowRecords } from './useFlowRecords'
 
 const REFRESH_INTERVAL_MS = 3000
+const REQUEST_LIMIT = 100
+const NO_REQUESTS: RequestRow[] = []
 
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now())
@@ -90,13 +92,26 @@ export function App() {
     }
   }, [selectedEvent])
 
-  // 통신 재생은 실제 기록을 먼저 보여주고, 없으면 시뮬레이션으로 시작한다.
+  // 데이터가 있으면 API 요청을 먼저 보여주고, 응답 확인, 시뮬레이션 순서로 내려간다.
   const flowTab = context.tab === 'play'
-  const observed = useMemo(() => (topology.data ? observedScript(topology.data, context.target, meta.data?.mode === 'demo') : undefined), [topology.data, context.target, meta.data?.mode])
+  const demo = meta.data?.mode === 'demo'
+  const requests = useQuery({
+    queryKey: [live ? 'live' : 'fixed', 'requests', server?.id, live ? context.range : [context.from, context.to, context.frozen, context.range]],
+    queryFn: () => {
+      const { from, to } = timeWindow(context, Date.now())
+      return fetchRequests(server!.id, from, to, REQUEST_LIMIT)
+    },
+    enabled: Boolean(server),
+    placeholderData: (previous) => previous,
+  })
+  const requestRows = requests.data ?? NO_REQUESTS
+  const requested = useMemo(() => (topology.data ? requestScript(requestRows, topology.data, demo) : undefined), [requestRows, topology.data, demo])
+  const observed = useMemo(() => (topology.data ? observedScript(topology.data, context.target, demo) : undefined), [topology.data, context.target, demo])
   const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, context.target) : undefined), [topology.data, context.target])
   const [sourceChoice, setSourceChoice] = useState<FlowSource | undefined>()
-  const source: FlowSource = sourceChoice === 'simulation' || !observed ? 'simulation' : 'observed'
-  const player = useFlowPlayer(source === 'observed' ? observed : simulation)
+  const scripts = { requests: requested, observed, simulation }
+  const source: FlowSource = sourceChoice && scripts[sourceChoice] ? sourceChoice : requested ? 'requests' : observed ? 'observed' : 'simulation'
+  const player = useFlowPlayer(scripts[source])
   const resetPlayer = player.reset
   useEffect(() => {
     if (!flowTab) resetPlayer()
@@ -161,12 +176,12 @@ export function App() {
           {servers.data?.length === 0 && <p className="empty">등록된 서버가 없습니다. 아직 수신한 데이터가 없습니다.</p>}
           {topology.isError && server && <p className="empty">구조 데이터를 아직 받지 못했습니다.</p>}
           {server && topology.data && (
-            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} player={flowTab ? player : undefined} flowPlayLabel={PLAY_LABEL[player.status]} onFlowPlay={player.script ? playFromMap : undefined} />
+            <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} player={flowTab ? player : undefined} requests={requestRows} flowPlayLabel={PLAY_LABEL[player.status]} onFlowPlay={player.script ? playFromMap : undefined} />
           )}
         </section>
         {flowTab && <FlowPanel player={player} />}
         {detailOpen && !flowTab && <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />}
-        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} />
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ requests: Boolean(requested), observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} />
       </main>
     </div>
   )

@@ -1,9 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { PACKET_LABEL, type FlowPacket, type FlowSource, type PacketKind } from '../flow'
-import { formatClock } from '../format'
+import { formatBytes, formatClock } from '../format'
 import type { FlowPlayer } from '../useFlowPlayer'
 
 const LEGEND: Record<FlowSource, PacketKind[]> = {
+  requests: ['request', 'response', 'fail'],
   simulation: ['connect', 'request', 'response'],
   observed: ['probe', 'response', 'fail'],
 }
@@ -41,8 +42,11 @@ export function FlowControls({ player, source, sources, onSource, demo }: Contro
   return (
     <div className="flow-controls">
       <div className="flow-sources" role="group" aria-label="재생할 내용">
+        <button type="button" className={source === 'requests' ? 'active' : ''} disabled={!sources.requests} title={!sources.requests ? '에이전트의 access_logs를 설정하면 접근 로그의 실제 요청을 볼 수 있습니다' : demo ? '데모용 가짜 요청입니다' : '접근 로그에서 읽은 실제 요청입니다'} onClick={() => onSource('requests')}>
+          API 요청{demo ? ' (데모)' : ''}
+        </button>
         <button type="button" className={source === 'observed' ? 'active' : ''} disabled={!sources.observed} title={!sources.observed ? '응답 확인을 설정하면 사용할 수 있습니다' : demo ? '데모용 가짜 기록입니다' : '실제로 보낸 응답 확인 요청의 마지막 결과입니다'} onClick={() => onSource('observed')}>
-          {demo ? '데모 기록' : '실제 기록'}
+          응답 확인{demo ? ' (데모)' : ''}
         </button>
         <button type="button" className={source === 'simulation' ? 'active' : ''} disabled={!sources.simulation} title="구성을 따라 그린 예시입니다. 실제 통신이 아닙니다" onClick={() => onSource('simulation')}>
           시뮬레이션
@@ -81,6 +85,7 @@ function PacketRow({ packet, number, current, onSeek }: { packet: FlowPacket; nu
       <span className="mono">{packet.protocol}</span>
       <span className="ellipsis" title={`${packet.title} ${packet.detail}`}>{packet.title} · {packet.detail}</span>
       <span className="mono">{packet.durationMS !== null ? `${packet.durationMS}ms` : '—'}</span>
+      <span className="mono">{packet.bytes !== null ? formatBytes(packet.bytes) : '—'}</span>
       <span>{packet.result}</span>
     </button>
   )
@@ -94,7 +99,7 @@ export function FlowPacketTable({ player, source }: { player: FlowPlayer; source
   if (!player.script) {
     return (
       <p className="placeholder">
-        {source === 'simulation' ? '외부로 공개된 포트가 없어 그릴 경로가 없습니다.' : '재생할 응답 확인 기록이 없습니다.'}
+        {source === 'simulation' ? '외부로 공개된 포트가 없어 그릴 경로가 없습니다.' : source === 'requests' ? '이 구간에 읽은 요청이 없습니다.' : '재생할 응답 확인 기록이 없습니다.'}
       </p>
     )
   }
@@ -108,6 +113,7 @@ export function FlowPacketTable({ player, source }: { player: FlowPlayer; source
         <span role="columnheader">프로토콜</span>
         <span role="columnheader">내용</span>
         <span role="columnheader">소요</span>
+        <span role="columnheader">크기</span>
         <span role="columnheader">결과</span>
       </div>
       <div className="packet-rows">

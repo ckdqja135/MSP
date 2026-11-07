@@ -21,10 +21,11 @@ const (
 	cycle         = 10 * time.Minute
 	historyCycles = 6
 	// 시작 직후 장애 상태를 바로 볼 수 있도록 응답 실패 구간에서 시작한다.
-	startPhase  = 250 * time.Second
-	sampleEvery = 15 * time.Second
-	probeEvery  = 30 * time.Second
-	tick        = 5 * time.Second
+	startPhase   = 250 * time.Second
+	sampleEvery  = 15 * time.Second
+	probeEvery   = 30 * time.Second
+	requestEvery = 2 * time.Second
+	tick         = 5 * time.Second
 )
 
 // 한 주기 안에서 blog/api에 일어나는 사건의 시점이다.
@@ -319,6 +320,55 @@ func (s *Scenario) probesAt(t time.Time) []protocol.Probe {
 	return probes
 }
 
+// demoRequest는 가짜 요청의 틀이다. 어떤 서비스로 전달되는지 정해 두어 흐름이 구조도와 맞게 한다.
+var demoRequests = []struct {
+	method, path, upstream string
+	blogAPI                bool
+	base                   float64
+	bytes                  int64
+}{
+	{"GET", "/", "172.20.0.4:3000", false, 18, 8421},
+	{"GET", "/api/posts", "172.20.0.3:8080", true, 42, 15320},
+	{"GET", "/api/posts/42", "172.20.0.3:8080", true, 26, 3204},
+	{"POST", "/api/comments", "172.20.0.3:8080", true, 71, 412},
+	{"GET", "/shop/items", "172.22.0.11:4000", false, 58, 22011},
+	{"POST", "/shop/cart", "172.22.0.11:4000", false, 94, 640},
+}
+
+// requestsBetween은 시각으로 값을 정하는 가짜 요청을 만든다. api가 멈춘 구간에는 api로 가는 요청이 실패한다.
+func (s *Scenario) requestsBetween(from, to time.Time) []protocol.Request {
+	var requests []protocol.Request
+	for t := nextGrid(from, requestEvery); !t.After(to); t = t.Add(requestEvery) {
+		_, phase := s.position(t)
+		template := demoRequests[int(t.Unix()/int64(requestEvery/time.Second))%len(demoRequests)]
+		status := 200
+		if template.method == "POST" {
+			status = 201
+		}
+		duration := int64(template.base + wave(t, 13, template.base*0.3))
+		size := template.bytes
+		var upstream *int64
+		value := duration - 2
+		upstream = &value
+		if template.blogAPI {
+			switch {
+			case phase >= apiHangStart && phase < apiOOM:
+				status, duration, size = 504, 5000, 167
+			case phase >= apiOOM && phase < apiHealthy:
+				status, duration, size = 502, 3, 157
+			}
+			if status >= 500 {
+				upstream = nil
+			}
+		}
+		requests = append(requests, protocol.Request{
+			At: t, Service: "nginx", Method: template.method, Path: template.path, Proto: "HTTP/1.1", Status: status,
+			Bytes: &size, DurationMS: &duration, Upstream: template.upstream, UpstreamMS: upstream,
+		})
+	}
+	return requests
+}
+
 func (s *Scenario) eventsBetween(from, to time.Time) []protocol.Event {
 	var events []protocol.Event
 	first, _ := s.position(from)
@@ -397,6 +447,7 @@ func (s *Scenario) Batch(from, to time.Time) protocol.Batch {
 			batch.Probes = append(batch.Probes, s.probesAt(t)...)
 		}
 	}
+	batch.Requests = s.requestsBetween(from, to)
 	return batch
 }
 

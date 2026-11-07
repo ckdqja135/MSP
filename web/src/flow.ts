@@ -1,4 +1,4 @@
-import type { HostService, Probe, Service, Topology } from './api'
+import type { HostService, Probe, RequestRow, Service, Topology } from './api'
 import { parseTarget } from './context'
 import { isLoopbackAddress } from './format'
 import { serviceRole } from './scene'
@@ -6,7 +6,7 @@ import { hostServiceKey, hostServiceName, serviceLabel } from './status'
 
 // 통신 재생의 대본과 시간표다. 그리는 코드와 분리해 시간을 인자로 받아 시험할 수 있게 한다.
 
-export type FlowSource = 'observed' | 'simulation'
+export type FlowSource = 'requests' | 'observed' | 'simulation'
 export type PacketKind = 'connect' | 'request' | 'response' | 'probe' | 'fail'
 
 export const PACKET_LABEL: Record<PacketKind, string> = {
@@ -30,6 +30,7 @@ export interface FlowPacket {
   // 측정하지 않은 값은 null이다. 화면에는 비워서 표시한다.
   at: string | null
   durationMS: number | null
+  bytes: number | null
   result: string
 }
 
@@ -175,7 +176,7 @@ export function simulationScript(topology: Topology, target?: string): FlowScrip
   const inward = ['internet', 'host', entry.id]
   const outward = [...inward].reverse()
   const packet = (id: string, kind: PacketKind, protocolName: string, title: string, detail: string, path: string[], from: string, to: string): FlowPacket => ({
-    id, kind, protocol: protocolName, title, detail, path, from, to, at: null, durationMS: null, result: SIMULATION_RESULT,
+    id, kind, protocol: protocolName, title, detail, path, from, to, at: null, durationMS: null, bytes: null, result: SIMULATION_RESULT,
   })
 
   const steps: FlowStep[] = [{
@@ -258,7 +259,7 @@ function probeStep(service: Service, probes: Probe[]): FlowStep {
   const packets: FlowPacket[] = []
   for (const probe of probes) {
     const path = probePath(probe, service)
-    const base = { protocol: 'HTTP', at: probe.last_checked }
+    const base = { protocol: 'HTTP', at: probe.last_checked, bytes: null }
     const key = `${service.key}:${probe.vantage}`
     const origin = probeOrigin(probe)
     if (probe.state === 'ok') {
@@ -304,6 +305,89 @@ export function observedScript(topology: Topology, target?: string, demo = false
       ['대상', `서비스 ${services.length}개`],
       ['요청', `${probes.length}건 (실패 ${failed}건)`],
       ['크기', '측정하지 않음'],
+    ],
+  }
+}
+
+// entryDevice는 요청을 받은 프록시의 장비를 찾는다. 구성에 없으면 서버까지만 그린다.
+export function entryDevice(service: string, topology: Topology): string {
+  if ((topology.host_services ?? []).some((item) => hostServiceKey(item) === service)) return `hostsvc:${service}`
+  if (topology.projects.some((project) => project.services.some((item) => item.key === service))) return `svc:${service}`
+  return 'host'
+}
+
+// upstreamDevice는 로그에 적힌 전달 주소를 구성에서 찾는다. 찾지 못하면 뒤쪽을 그리지 않는다.
+export function upstreamDevice(upstream: string, topology: Topology): { id: string; name: string } | undefined {
+  const index = upstream.lastIndexOf(':')
+  if (index < 0) return undefined
+  const host = upstream.slice(0, index)
+  const port = Number(upstream.slice(index + 1))
+  for (const service of topology.projects.flatMap((project) => project.services)) {
+    for (const container of service.containers) {
+      const byAddress = container.networks?.some((network) => network.ip === host)
+      const byPublished = isLoopbackAddress(host) && container.ports?.some((item) => item.host_port === port)
+      if (byAddress || byPublished) return { id: `svc:${service.key}`, name: serviceLabel(service.key) }
+    }
+  }
+  return undefined
+}
+
+const MAX_REQUEST_STEPS = 8
+
+function requestStep(request: RequestRow, topology: Topology): FlowStep {
+  const label = `${request.method} ${request.path}`
+  const entry = entryDevice(request.service, topology)
+  const inward = entry === 'host' ? ['internet', 'host'] : ['internet', 'host', entry]
+  const protocol = request.proto || 'HTTP'
+  const failed = request.status >= 500
+  const target = upstreamDevice(request.upstream, topology)
+  const key = String(request.id)
+  const base = { protocol, at: request.at }
+  const packets: FlowPacket[] = [
+    { ...base, id: `${key}:in`, kind: 'request', title: label, detail: `외부 → ${request.service}`, path: inward, from: '외부', to: request.service, durationMS: null, bytes: null, result: '수신' },
+  ]
+  if (target) {
+    packets.push({ ...base, id: `${key}:forward`, kind: 'request', title: label, detail: `${request.service} → ${target.name}`, path: [entry, target.id], from: request.service, to: target.name, durationMS: null, bytes: null, result: '전달' })
+    if (request.upstream_ms !== null) {
+      packets.push({ ...base, id: `${key}:back`, kind: 'response', title: '응답', detail: `${target.name} → ${request.service}`, path: [target.id, entry], from: target.name, to: request.service, durationMS: request.upstream_ms, bytes: null, result: '응답' })
+    }
+  }
+  packets.push({
+    ...base, id: `${key}:out`, kind: failed ? 'fail' : 'response', title: String(request.status), detail: `${request.service} → 외부`, path: [...inward].reverse(), from: request.service, to: '외부', durationMS: request.duration_ms, bytes: request.bytes, result: String(request.status),
+  })
+
+  let description = `접근 로그에 전달 대상이 적혀 있지 않아 ${request.service} 뒤쪽은 그리지 않습니다.`
+  if (target) {
+    description = `${request.service}가 ${target.name}로 전달한 요청입니다.`
+  } else if (request.upstream) {
+    description = `전달 주소 ${request.upstream}를 지금 구성에서 찾지 못해 ${request.service} 뒤쪽은 그리지 않습니다.`
+  }
+  if (failed) description += ` 응답 코드 ${request.status}입니다.`
+  return {
+    id: key,
+    title: label,
+    summary: [String(request.status), request.duration_ms !== null ? `${request.duration_ms}ms` : ''].filter(Boolean).join(' · '),
+    description,
+    packets,
+  }
+}
+
+// requestScript는 접근 로그에서 읽은 최근 요청을 재생한다. 요청 사이의 간격은 실제 시간이 아니다.
+export function requestScript(requests: RequestRow[], topology: Topology, demo = false): FlowScript | undefined {
+  if (requests.length === 0) return undefined
+  const recent = [...requests].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-MAX_REQUEST_STEPS)
+  const failed = requests.filter((request) => request.status >= 500).length
+  return {
+    source: 'requests',
+    title: `최근 API 요청 ${recent.length}건`,
+    note: demo
+      ? '데모용 가짜 요청입니다. 실제 서버에 연결하면 접근 로그에서 읽은 실제 요청이 나옵니다.'
+      : '접근 로그에서 읽은 실제 요청입니다. 쿼리 문자열과 클라이언트 주소는 저장하지 않습니다. 서비스끼리 주고받는 호출은 이 로그에 없어 보이지 않습니다.',
+    steps: recent.map((request) => requestStep(request, topology)),
+    facts: [
+      ['조회한 요청', `${requests.length}건 (5xx ${failed}건)`],
+      ['재생', `최근 ${recent.length}건`],
+      ['간격', '실제 시간과 다릅니다'],
     ],
   }
 }

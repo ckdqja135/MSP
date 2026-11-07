@@ -79,7 +79,7 @@ describe('데모 구분', () => {
 })
 
 describe('통신 재생', () => {
-  const packet: FlowPacket = { id: 'a', kind: 'request', protocol: 'HTTP', title: 'GET /', detail: '외부 → web', path: ['internet', 'svc:a'], from: '외부', to: 'blog/web', at: null, durationMS: null, result: '예시' }
+  const packet: FlowPacket = { id: 'a', kind: 'request', protocol: 'HTTP', title: 'GET /', detail: '외부 → web', path: ['internet', 'svc:a'], from: '외부', to: 'blog/web', at: null, durationMS: null, bytes: null, result: '예시' }
   const script: FlowScript = { source: 'simulation', title: 'blog/web로 들어오는 요청', note: '실제 통신이 아닙니다.', steps: [{ id: 's', title: '요청', summary: '', description: '', packets: [packet] }], facts: [] }
 
   it('시뮬레이션은 파일에서도 실제가 아님을 밝히고 시각을 비운다', () => {
@@ -88,7 +88,15 @@ describe('통신 재생', () => {
     expect(file.text).toContain('실제 통신이 아닙니다')
     expect(file.name).toContain('simulation')
     expect(file.text).toContain('\n- 요청 no=1 ')
-    expect(file.text).toContain('duration_ms=- result=예시')
+    expect(file.text).toContain('duration_ms=- bytes=- result=예시')
+  })
+
+  it('API 요청은 크기까지 적고 이름으로 구분된다', () => {
+    const requests: FlowScript = { ...script, source: 'requests', steps: [{ ...script.steps[0], packets: [{ ...packet, kind: 'response', at: '2026-11-06T02:00:00Z', durationMS: 12, bytes: 1500, result: '200' }] }] }
+    const file = playbackLog(requests, 'home-1', false, NOW)
+    expect(file.text).toContain('duration_ms=12 bytes=1500 result=200')
+    expect(file.name).toContain('-playback-requests-')
+    expect(file.text).toContain('API 요청')
   })
 
   it('기록은 실제 시각과 소요를 적는다', () => {

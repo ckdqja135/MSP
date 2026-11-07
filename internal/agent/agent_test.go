@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1249,5 +1250,91 @@ func TestUnsupportedPlatformIsNotAnError(t *testing.T) {
 	h.agent.collectTopology(context.Background())
 	if h.agent.collectors["host_services"].State != protocol.CollectorUnsupported {
 		t.Errorf("collector = %+v", h.agent.collectors["host_services"])
+	}
+}
+
+func TestCollectRequestsReadsOnlyNewLinesAndDiscardsClientData(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "access.log")
+	line := `203.0.113.7 - - [06/Nov/2026:21:35:00 +0900] "GET /api/posts?token=abc HTTP/1.1" 200 12 "-" "curl"` + "\n"
+	if err := os.WriteFile(path, []byte(line), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	instance := &Agent{
+		now:           time.Now,
+		collectors:    map[string]protocol.CollectorStatus{},
+		flushSoon:     make(chan struct{}, 1),
+		accessTailers: newAccessTailers([]AccessLogConfig{{Service: "nginx", Path: path}}),
+	}
+	instance.collectRequests(context.Background())
+	if len(instance.pending.Requests) != 0 {
+		t.Fatalf("지나간 로그를 읽었다: %+v", instance.pending.Requests)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString(line + "형식이 다른 줄\n"); err != nil {
+		t.Fatal(err)
+	}
+	instance.collectRequests(context.Background())
+	if len(instance.pending.Requests) != 1 || instance.pending.Requests[0].Path != "/api/posts" {
+		t.Fatalf("요청 = %+v", instance.pending.Requests)
+	}
+	body, _ := json.Marshal(instance.pending.Requests)
+	for _, secret := range []string{"203.0.113.7", "token", "abc", "curl"} {
+		if strings.Contains(string(body), secret) {
+			t.Errorf("%q가 전송 내용에 남았다: %s", secret, body)
+		}
+	}
+	if instance.collectors["access_log"].State != protocol.CollectorOK {
+		t.Errorf("수집 상태 = %+v", instance.collectors["access_log"])
+	}
+	select {
+	case <-instance.flushSoon:
+	default:
+		t.Error("요청이 들어왔는데 전송을 앞당기지 않았다")
+	}
+}
+
+func TestCollectRequestsCapsAndRecordsDropped(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "access.log")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	instance := &Agent{
+		now:           time.Now,
+		collectors:    map[string]protocol.CollectorStatus{},
+		flushSoon:     make(chan struct{}, 1),
+		accessTailers: newAccessTailers([]AccessLogConfig{{Service: "nginx", Path: path}}),
+	}
+	instance.collectRequests(context.Background())
+	line := `1.2.3.4 - - [06/Nov/2026:21:35:00 +0900] "GET / HTTP/1.1" 200 1 "-" "-"` + "\n"
+	if err := os.WriteFile(path, []byte(strings.Repeat(line, maxRequestsPerFlush+50)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	instance.collectRequests(context.Background())
+	if len(instance.pending.Requests) != maxRequestsPerFlush || instance.requestsDropped != 50 {
+		t.Fatalf("요청 %d개, 버림 %d개", len(instance.pending.Requests), instance.requestsDropped)
+	}
+	instance.pending.Requests = nil
+	instance.collectRequests(context.Background())
+	if len(instance.pending.Gaps) != 1 || instance.pending.Gaps[0].Dropped != 50 || instance.pending.Gaps[0].Source != "access_log" {
+		t.Errorf("버린 요청을 공백으로 남기지 않았다: %+v", instance.pending.Gaps)
+	}
+}
+
+func TestCollectRequestsReportsUnreadableLog(t *testing.T) {
+	instance := &Agent{
+		now:           time.Now,
+		collectors:    map[string]protocol.CollectorStatus{},
+		flushSoon:     make(chan struct{}, 1),
+		accessTailers: newAccessTailers([]AccessLogConfig{{Service: "nginx", Path: filepath.Join(t.TempDir(), "none.log")}}),
+	}
+	instance.collectRequests(context.Background())
+	if instance.collectors["access_log"].State != protocol.CollectorError {
+		t.Errorf("읽지 못한 것을 수집 실패로 표시하지 않았다: %+v", instance.collectors["access_log"])
 	}
 }

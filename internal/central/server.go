@@ -109,6 +109,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/v1/servers/{id}/topology", s.handleTopology)
 	api.HandleFunc("GET /api/v1/servers/{id}/events", s.handleEvents)
 	api.HandleFunc("GET /api/v1/servers/{id}/gaps", s.handleGaps)
+	api.HandleFunc("GET /api/v1/servers/{id}/requests", s.handleRequests)
 	api.HandleFunc("GET /api/v1/servers/{id}/samples", s.handleSamples)
 	api.HandleFunc("GET /api/v1/servers/{id}/logs", s.handleLogs)
 	api.HandleFunc("GET /api/v1/alerts", s.handleAlerts)
@@ -322,6 +323,21 @@ func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, gaps)
+}
+
+func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
+	from, to, err := s.timeRange(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	requests, err := s.store.Requests(r.Context(), r.PathValue("id"), from, to, limit)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	writeJSON(w, requests)
 }
 
 func (s *Server) handleSamples(w http.ResponseWriter, r *http.Request) {

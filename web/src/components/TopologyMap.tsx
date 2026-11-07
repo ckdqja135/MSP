@@ -15,10 +15,10 @@ import {
   type NodeProps,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { diffActivities, eventActivity, mergeCallouts, type Activity } from '../activity'
-import type { EventRow, HostService, Network, Project, Server, Service, Topology } from '../api'
+import { diffActivities, eventActivity, mergeCallouts, requestActivities, type Activity } from '../activity'
+import type { EventRow, HostService, Network, Project, RequestRow, Server, Service, Topology } from '../api'
 import { updateContext } from '../context'
-import type { PacketKind } from '../flow'
+import type { FlowSource, PacketKind } from '../flow'
 import { compactPorts, formatBytes, formatPercent, formatUptime, readMetric } from '../format'
 import {
   CELL_X,
@@ -52,6 +52,7 @@ interface Layers {
   networks: boolean
   declared: boolean
   activity: boolean
+  requests: boolean
 }
 
 // 장비 상자의 크기와 바닥 중심 위치다. 연결선은 바닥 중심에서 끝난다.
@@ -542,9 +543,16 @@ interface MapProps {
   // 패널을 열고 닫으면 맵 크기가 바뀌므로 다시 맞춘다. 장비의 위치는 바뀌지 않는다.
   layoutKey: string
   player?: FlowPlayer
+  requests: RequestRow[]
   // 어느 탭에 있든 맵에서 바로 재생을 시작한다.
   flowPlayLabel: string
   onFlowPlay?: () => void
+}
+
+function flowTag(source: FlowSource, demo: boolean): string {
+  if (source === 'simulation') return '시뮬레이션: 실제 통신이 아닙니다'
+  if (demo) return source === 'requests' ? '데모 API 요청: 가짜 데이터입니다' : '데모 기록: 가짜 데이터입니다'
+  return source === 'requests' ? '실제 API 요청 (접근 로그)' : '실제 응답 확인 기록'
 }
 
 // 이 배율보다 작으면 이름과 상태만 크게 보여준다. 작은 글자는 어차피 읽히지 않는다.
@@ -552,13 +560,13 @@ const FAR_ZOOM = 0.62
 const FLOW_PADDING = { top: '150px', bottom: '70px', left: '110px', right: '110px' } as const
 const FLOW_CAMERA_MS = 620
 
-function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus, layoutKey, player, flowPlayLabel, onFlowPlay }: MapProps) {
+function MapCanvas({ server, topology, target, highlight, now, live, selectedEvent, focus, layoutKey, player, requests, flowPlayLabel, onFlowPlay }: MapProps) {
   const { fitView } = useReactFlow()
   const slotKey = `msp.slots.${server.mode}.${server.id}`
   const collapseKey = `msp.collapse-overrides.${server.mode}.${server.id}`
   const [slots, setSlots] = useState<SlotMemory>(() => loadJSON(slotKey, emptySlots()))
   const [collapseOverrides, setCollapseOverrides] = useState<Record<string, boolean>>(() => loadJSON(collapseKey, {}))
-  const [layers, setLayers] = useState<Layers>({ ports: true, networks: true, declared: false, activity: true })
+  const [layers, setLayers] = useState<Layers>({ ports: true, networks: true, declared: false, activity: true, requests: true })
 
   const currentSlots = useMemo(() => assignSlots(slots, topology), [slots, topology])
   useEffect(() => {
@@ -651,6 +659,18 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
     }
     previousTopology.current = topology
   }, [topology, live])
+  // 새로 들어온 요청만 그린다. 처음 불러온 지나간 요청은 지금 일처럼 그리지 않는다.
+  const lastRequestID = useRef<number | null>(null)
+  useEffect(() => {
+    const newest = requests.reduce((max, request) => Math.max(max, request.id), 0)
+    const known = lastRequestID.current
+    lastRequestID.current = Math.max(known ?? 0, newest)
+    if (known === null || !live) return
+    const fresh = requests.filter((request) => request.id > known).reverse()
+    if (fresh.length > 0) setActivities((current) => [...current, ...requestActivities(fresh, topology, Date.now())])
+    // 요청 목록이 바뀔 때만 실행한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [requests, live])
   useEffect(() => {
     setActivities((current) => {
       const alive = current.filter((activity) => activity.until > Date.now())
@@ -660,9 +680,10 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
 
   const selectedActivity = useMemo(() => (selectedEvent ? eventActivity(selectedEvent) : undefined), [selectedEvent])
   const shown = useMemo(() => {
-    const list = layers.activity ? activities : []
+    // 기록을 골랐을 때는 그 기록만 보여준다. 관계없는 요청 경로가 함께 지나가면 원인처럼 보일 수 있다.
+    const list = activities.filter((activity) => (activity.request ? layers.requests && !selectedActivity : layers.activity))
     return selectedActivity ? [selectedActivity, ...list] : list
-  }, [activities, selectedActivity, layers.activity])
+  }, [activities, selectedActivity, layers.activity, layers.requests])
 
   // 재생 중에는 패킷이 지나간 장비만 또렷하게 보이고, 화면은 지금 패킷의 경로를 따라간다.
   const playing = Boolean(player && player.status !== 'idle' && player.frame)
@@ -831,11 +852,11 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
         type: 'iso',
         source: activity.from,
         target: visibleDevice(scene, activity.to) ?? activity.to,
-        className: `edge-activity ${activity.tone}`,
+        className: `edge-activity ${activity.tone} ${activity.request ? 'request' : ''}`,
         selectable: false,
         focusable: false,
         zIndex: 4,
-        data: { d, marker: activity.tone === 'fail' ? 'iso-arrow-fail' : 'iso-arrow-active', dot: true },
+        data: { d, marker: activity.tone === 'fail' ? 'iso-arrow-fail' : activity.request ? 'iso-arrow-request' : 'iso-arrow-active', dot: true },
       })
     }
 
@@ -925,10 +946,17 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
           <input type="checkbox" checked={layers.activity} onChange={(e) => setLayers({ ...layers, activity: e.target.checked })} />
           응답 확인
         </label>
-        <label className="disabled" title="요청 추적이 연동되지 않아 실제 호출 관계를 알 수 없습니다">
-          <input type="checkbox" disabled />
-          관측 요청 (미연동)
-        </label>
+        {requests.length > 0 ? (
+          <label title={server.mode === 'demo' ? '데모용 가짜 요청입니다' : '접근 로그에서 읽은 실제 요청입니다'}>
+            <input type="checkbox" checked={layers.requests} onChange={(e) => setLayers({ ...layers, requests: e.target.checked })} />
+            API 요청{server.mode === 'demo' ? ' (데모)' : ''}
+          </label>
+        ) : (
+          <label className="disabled" title="이 구간에 읽은 요청이 없습니다. 에이전트의 access_logs 설정과 수집 상태를 확인하세요">
+            <input type="checkbox" disabled />
+            API 요청 (없음)
+          </label>
+        )}
         <button
           type="button"
           className="tool-button"
@@ -949,10 +977,11 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
         <span><i className="line member" />네트워크 소속 (호출 아님)</span>
         <span><i className="line declared" />선언 의존 (호출 미확인)</span>
         <span><i className="line activity" />실제 응답 확인</span>
+        {requests.length > 0 && <span><i className="line request" />API 요청</span>}
       </Panel>
       {player?.script && (
         <Panel position="top-right" className={`map-flow-tag ${player.script.source} ${server.mode === 'demo' ? 'demo' : ''}`} role="status">
-          {player.script.source === 'simulation' ? '시뮬레이션: 실제 통신이 아닙니다' : server.mode === 'demo' ? '데모 기록: 가짜 데이터입니다' : '실제 응답 확인 기록'}
+          {flowTag(player.script.source, server.mode === 'demo')}
         </Panel>
       )}
       {highlight.note && !player && (
@@ -966,6 +995,7 @@ function MapCanvas({ server, topology, target, highlight, now, live, selectedEve
             ['iso-arrow', 'marker-main'],
             ['iso-arrow-muted', 'marker-muted'],
             ['iso-arrow-active', 'marker-active'],
+            ['iso-arrow-request', 'marker-request'],
             ['iso-arrow-fail', 'marker-fail'],
           ].map(([id, className]) => (
             <marker key={id} id={id} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse" markerUnits="userSpaceOnUse">

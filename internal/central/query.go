@@ -352,6 +352,58 @@ func (s *Store) Gaps(ctx context.Context, serverID string, from, to time.Time) (
 	return gaps, rows.Err()
 }
 
+// RequestRow는 흐름 재생에 쓰는 실제 요청이다. 로그에 없는 값은 null이다.
+type RequestRow struct {
+	ID         int64     `json:"id"`
+	At         time.Time `json:"at"`
+	Service    string    `json:"service"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Proto      string    `json:"proto"`
+	Status     int       `json:"status"`
+	Bytes      *int64    `json:"bytes"`
+	DurationMS *int64    `json:"duration_ms"`
+	Upstream   string    `json:"upstream"`
+	UpstreamMS *int64    `json:"upstream_ms"`
+}
+
+const (
+	defaultRequestLimit = 100
+	maxRequestLimit     = 1000
+)
+
+// Requests는 구간 안의 요청을 최근 순으로 돌려준다.
+func (s *Store) Requests(ctx context.Context, serverID string, from, to time.Time, limit int) ([]RequestRow, error) {
+	if limit <= 0 {
+		limit = defaultRequestLimit
+	}
+	if limit > maxRequestLimit {
+		limit = maxRequestLimit
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, at, service, method, path, proto, status, bytes, duration_ms, upstream, upstream_ms FROM requests
+		WHERE server_id = ? AND at >= ? AND at <= ? ORDER BY at DESC, id DESC LIMIT ?`,
+		serverID, from.UnixMilli(), to.UnixMilli(), limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	requests := []RequestRow{}
+	for rows.Next() {
+		var r RequestRow
+		var at int64
+		var size, duration, upstream sql.NullInt64
+		if err := rows.Scan(&r.ID, &at, &r.Service, &r.Method, &r.Path, &r.Proto, &r.Status, &size, &duration, &r.Upstream, &upstream); err != nil {
+			return nil, err
+		}
+		r.At = fromMillis(at)
+		r.Bytes, r.DurationMS, r.UpstreamMS = optional(size), optional(duration), optional(upstream)
+		requests = append(requests, r)
+	}
+	return requests, rows.Err()
+}
+
 type Point struct {
 	At    int64   `json:"t"`
 	Value float64 `json:"v"`

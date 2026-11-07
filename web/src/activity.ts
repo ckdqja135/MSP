@@ -1,4 +1,5 @@
-import type { EventRow, Service, Topology } from './api'
+import type { EventRow, RequestRow, Service, Topology } from './api'
+import { entryDevice, upstreamDevice } from './flow'
 import { formatDuration, shortID } from './format'
 import { serviceHeadline, serviceLabel, sourceLabel, typeLabel } from './status'
 
@@ -12,10 +13,13 @@ export interface Activity {
   tone: 'ok' | 'fail' | 'info'
   // 정상 응답은 경로만 잠깐 그리고 설명 카드는 띄우지 않는다.
   quiet?: boolean
+  // 실제 API 요청의 경로는 응답 확인과 다른 색으로 그린다.
+  request?: boolean
   until: number
 }
 
 const PROBE_MS = 2200
+const REQUEST_MS = 2200
 const CHANGE_MS = 7000
 
 function indexServices(topology: Topology): Map<string, Service> {
@@ -90,6 +94,40 @@ export function eventActivity(event: EventRow): Activity | undefined {
     tone: event.severity === 'info' ? 'info' : 'fail',
     until: Number.POSITIVE_INFINITY,
   }
+}
+
+// requestActivities는 새로 들어온 요청을 구조도에 그린다. 같은 경로는 한 번만 그려 요청이 몰려도 화면이 덮이지 않게 한다.
+export function requestActivities(requests: RequestRow[], topology: Topology, now: number): Activity[] {
+  const routes = new Map<string, { from: string; to: string; rows: RequestRow[] }>()
+  const add = (from: string, to: string, request: RequestRow) => {
+    const key = `${from}>${to}`
+    const route = routes.get(key) ?? { from, to, rows: [] }
+    route.rows.push(request)
+    routes.set(key, route)
+  }
+  for (const request of requests) {
+    const entry = entryDevice(request.service, topology)
+    add('internet', entry, request)
+    const target = upstreamDevice(request.upstream, topology)
+    if (target && entry !== 'host') add(entry, target.id, request)
+  }
+  return [...routes.values()].map(({ from, to, rows }) => {
+    const latest = rows[rows.length - 1]
+    const failures = rows.filter((row) => row.status >= 500)
+    const shown = failures[failures.length - 1] ?? latest
+    const duration = shown.duration_ms !== null ? ` · ${shown.duration_ms}ms` : ''
+    return {
+      id: `request:${from}:${to}:${now}`,
+      from,
+      to,
+      title: `${shown.method} ${shown.path}`,
+      lines: [`${shown.status}${duration}`, ...(rows.length > 1 ? [`이 경로로 ${rows.length}건`] : [])],
+      tone: failures.length > 0 ? 'fail' : 'ok',
+      quiet: failures.length === 0,
+      request: true,
+      until: now + REQUEST_MS,
+    }
+  })
 }
 
 const MAX_CARD_LINES = 3

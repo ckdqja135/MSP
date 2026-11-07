@@ -42,6 +42,12 @@ for name in msp-central msp-agent; do
 done
 [ -e /opt/msp ] && note "/opt/msp가 이미 있습니다"
 
+if [ -e /var/log/nginx/access.log ]; then
+    ok "nginx 접근 로그 있음 (소유 그룹 $(stat -c %G /var/log/nginx/access.log 2>/dev/null))"
+else
+    note "nginx 접근 로그가 없어 API 요청은 표시되지 않습니다"
+fi
+
 available=$(df -Pm /var/lib 2>/dev/null | awk 'NR==2 {print $4}')
 if [ -n "$available" ] && [ "$available" -ge 2048 ]; then
     ok "/var/lib 여유 공간 ${available}MB"

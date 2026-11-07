@@ -96,11 +96,28 @@ CREATE TABLE IF NOT EXISTS probe_states (
   last_failure TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (server_id, service_key, vantage)
 );
+CREATE TABLE IF NOT EXISTS requests (
+  id INTEGER PRIMARY KEY,
+  server_id TEXT NOT NULL,
+  at INTEGER NOT NULL,
+  service TEXT NOT NULL,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  proto TEXT NOT NULL DEFAULT '',
+  status INTEGER NOT NULL,
+  bytes INTEGER,
+  duration_ms INTEGER,
+  upstream TEXT NOT NULL DEFAULT '',
+  upstream_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS requests_time ON requests (server_id, at);
 `
 
 const (
 	sampleRetention = 7 * 24 * time.Hour
 	recordRetention = 90 * 24 * time.Hour
+	// 요청은 서버마다 이 수까지만 남긴다. 요청이 많은 서버에서 디스크를 채우지 않게 하기 위해서다.
+	maxStoredRequests = 200_000
 )
 
 // Store는 쓰기를 한 번에 하나만 수행한다. SQLite의 단일 쓰기 제약을 잠금 대기 오류 없이 지키기 위해서다.
@@ -159,7 +176,7 @@ func (s *Store) ResetDemo(ctx context.Context) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	for _, table := range []string{"servers", "ingest_cursors", "topology_versions", "events", "samples", "gaps", "probe_states", "alerts", "notification_deliveries"} {
+	for _, table := range []string{"servers", "ingest_cursors", "topology_versions", "events", "samples", "gaps", "probe_states", "alerts", "notification_deliveries", "requests"} {
 		if _, err := s.db.ExecContext(ctx, "DELETE FROM "+table); err != nil {
 			return err
 		}
@@ -248,6 +265,16 @@ func (s *Store) Ingest(ctx context.Context, b protocol.Batch, receivedAt time.Ti
 	}
 	for _, p := range b.Probes {
 		if err := applyProbe(ctx, tx, b.ServerID, p, receivedAt); err != nil {
+			return protocol.Ack{}, err
+		}
+	}
+	for _, request := range b.Requests {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO requests (server_id, at, service, method, path, proto, status, bytes, duration_ms, upstream, upstream_ms)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			b.ServerID, request.At.UnixMilli(), request.Service, request.Method, request.Path, request.Proto, request.Status,
+			request.Bytes, request.DurationMS, request.Upstream, request.UpstreamMS)
+		if err != nil {
 			return protocol.Ack{}, err
 		}
 	}
@@ -357,12 +384,46 @@ func (s *Store) Purge(ctx context.Context, now time.Time) error {
 	}{
 		// server_id를 조건에 넣어야 시간 인덱스를 탄다. 없으면 지울 것이 없어도 표 전체를 훑으며 쓰기를 막는다.
 		{`DELETE FROM samples WHERE server_id IN (SELECT id FROM servers) AND at < ?`, sampleLimit},
+		{`DELETE FROM requests WHERE server_id IN (SELECT id FROM servers) AND at < ?`, sampleLimit},
 		{`DELETE FROM events WHERE occurred_at < ?`, recordLimit},
 		{`DELETE FROM gaps WHERE to_at < ?`, recordLimit},
 		{`DELETE FROM topology_versions WHERE valid_to IS NOT NULL AND valid_to < ?`, recordLimit},
 	}
 	for _, statement := range statements {
 		if _, err := s.db.ExecContext(ctx, statement.query, statement.limit); err != nil {
+			return err
+		}
+	}
+	return s.trimRequests(ctx)
+}
+
+// trimRequests는 서버마다 최근 요청만 남긴다. 경계 번호를 먼저 구해 한 번에 지운다.
+// 행마다 경계를 다시 구하면 요청이 많을 때 정리 자체가 큰 부하가 된다.
+func (s *Store) trimRequests(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM servers`)
+	if err != nil {
+		return err
+	}
+	var servers []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		servers = append(servers, id)
+	}
+	rows.Close()
+	for _, server := range servers {
+		var cutoff int64
+		err := s.db.QueryRowContext(ctx, `SELECT id FROM requests WHERE server_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`, server, maxStoredRequests).Scan(&cutoff)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM requests WHERE server_id = ? AND id <= ?`, server, cutoff); err != nil {
 			return err
 		}
 	}

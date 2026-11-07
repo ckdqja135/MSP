@@ -631,6 +631,19 @@ func TestPurgeRemovesOnlyExpiredSamples(t *testing.T) {
 	}
 }
 
+// 요청 정리는 서버별 인덱스로 경계를 찾고 지운다. 행마다 경계를 다시 구하면 정리가 큰 부하가 된다.
+func TestRequestTrimUsesIndex(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	for name, plan := range map[string]string{
+		"경계": queryPlan(t, store, `SELECT id FROM requests WHERE server_id = ? ORDER BY id DESC LIMIT 1 OFFSET ?`, "a", 1),
+		"삭제": queryPlan(t, store, `DELETE FROM requests WHERE server_id = ? AND id <= ?`, "a", 1),
+	} {
+		if !strings.Contains(plan, "requests_time") || strings.Contains(plan, "SCAN requests") || strings.Contains(plan, "CORRELATED") {
+			t.Errorf("%s 쿼리가 인덱스를 쓰지 않는다:\n%s", name, plan)
+		}
+	}
+}
+
 // 10초와 1시간마다 도는 쿼리가 표 전체를 훑지 않는지 본다. 데이터가 쌓일수록 부하가 커지는 것을 막는다.
 func TestPeriodicQueriesUseTimeIndex(t *testing.T) {
 	store := openStore(t, protocol.ModeLive)
@@ -671,5 +684,94 @@ func TestWebFilesStayFreshAfterRebuild(t *testing.T) {
 	}
 	if response := get("/assets/app-old.js"); response.Code != http.StatusNotFound {
 		t.Errorf("지난 빌드의 에셋에 첫 화면을 돌려줬다: %d", response.Code)
+	}
+}
+
+func TestRequestsAreStoredAndRead(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	size, duration := int64(120), int64(0)
+	batch := liveBatch(1, baseTime)
+	batch.Requests = []protocol.Request{
+		{At: baseTime, Service: "nginx", Method: "GET", Path: "/a", Status: 200, Bytes: &size, DurationMS: &duration, Upstream: "172.20.0.3:8080"},
+		{At: baseTime.Add(time.Second), Service: "nginx", Method: "POST", Path: "/b", Status: 502},
+	}
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	if ack, err := store.Ingest(ctx, batch, baseTime); err != nil || !ack.Duplicate {
+		t.Fatalf("재전송 처리 = %+v, %v", ack, err)
+	}
+	rows, err := store.Requests(ctx, "home-1", baseTime.Add(-time.Minute), baseTime.Add(time.Minute), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Path != "/b" || rows[1].Path != "/a" {
+		t.Fatalf("최근 순이 아니거나 중복이 있다: %+v", rows)
+	}
+	if rows[0].Bytes != nil || rows[0].DurationMS != nil || rows[0].UpstreamMS != nil {
+		t.Errorf("로그에 없는 값을 만들었다: %+v", rows[0])
+	}
+	if rows[1].Bytes == nil || *rows[1].Bytes != 120 || rows[1].DurationMS == nil || *rows[1].DurationMS != 0 {
+		t.Errorf("0을 측정값으로 남기지 못했다: %+v", rows[1])
+	}
+	limited, err := store.Requests(ctx, "home-1", baseTime.Add(-time.Minute), baseTime.Add(time.Minute), 1)
+	if err != nil || len(limited) != 1 {
+		t.Errorf("limit = %d, %v", len(limited), err)
+	}
+	empty, err := store.Requests(ctx, "home-1", baseTime.Add(time.Hour), baseTime.Add(2*time.Hour), 0)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Errorf("빈 구간은 빈 목록이어야 한다: %v, %v", empty, err)
+	}
+}
+
+func TestPurgeRemovesExpiredRequests(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	batch := liveBatch(1, baseTime)
+	batch.Requests = []protocol.Request{
+		{At: baseTime.Add(-sampleRetention - time.Minute), Service: "nginx", Method: "GET", Path: "/old", Status: 200},
+		{At: baseTime.Add(-sampleRetention + time.Minute), Service: "nginx", Method: "GET", Path: "/new", Status: 200},
+	}
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Purge(ctx, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := store.Requests(ctx, "home-1", baseTime.Add(-30*24*time.Hour), baseTime, 0)
+	if err != nil || len(rows) != 1 || rows[0].Path != "/new" {
+		t.Errorf("정리 결과 = %+v, %v", rows, err)
+	}
+}
+
+func TestPurgeKeepsOnlyNewestRequests(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	if err := store.Enroll(ctx, "home-1", "token"); err != nil {
+		t.Fatal(err)
+	}
+	tx, err := store.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := maxStoredRequests + 5
+	for i := 0; i < total; i++ {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO requests (server_id, at, service, method, path, status) VALUES ('home-1', ?, 'nginx', 'GET', '/', 200)`, baseTime.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Purge(ctx, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	var count, oldest int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*), MIN(id) FROM requests`).Scan(&count, &oldest); err != nil {
+		t.Fatal(err)
+	}
+	if count != maxStoredRequests || oldest != 6 {
+		t.Errorf("남은 요청 %d건, 가장 오래된 id %d", count, oldest)
 	}
 }

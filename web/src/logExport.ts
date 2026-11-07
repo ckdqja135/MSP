@@ -115,6 +115,7 @@ function packetLine(packet: FlowPacket, number: number): string {
     `to=${field(packet.to)}`,
     `protocol=${field(packet.protocol)}`,
     `duration_ms=${field(packet.durationMS)}`,
+    `bytes=${field(packet.bytes)}`,
     `result=${field(packet.result)}`,
     `msg=${quoted(`${packet.title} ${packet.detail}`)}`,
   ].join(' ')
@@ -122,17 +123,17 @@ function packetLine(packet: FlowPacket, number: number): string {
 
 export function playbackLog(script: FlowScript, server: string, demo: boolean, now: number): LogFile {
   const packets = script.steps.flatMap((step) => step.packets)
-  const simulation = script.source === 'simulation'
+  const label = { simulation: '시뮬레이션', observed: '응답 확인 기록', requests: 'API 요청' }[script.source]
   return compose(
     {
-      title: simulation ? '통신 재생 (시뮬레이션)' : '통신 재생 (응답 확인 기록)',
+      title: `통신 재생 (${label})`,
       server,
       demo,
       conditions: [script.title],
       notes: [script.note],
     },
     packets.map((packet, index) => packetLine(packet, index + 1)),
-    logFileName(server, ['playback', simulation ? 'simulation' : 'observed'], demo, now),
+    logFileName(server, ['playback', script.source], demo, now),
     now,
   )
 }

@@ -6,6 +6,9 @@
   "spool_dir": "/var/lib/msp-agent/spool",
   "spool_max_mb": 200,
   "disk_path": "/",
+  "access_logs": [
+    { "service": "nginx", "path": "/var/log/nginx/access.log" }
+  ],
   "host_services": [
     { "name": "nginx", "ports": [80, 443] }
   ],

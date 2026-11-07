@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import type { Container, HostService, Probe, Project, Relation, Service, Topology } from './api'
-import { buildTimeline, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, simulationScript } from './flow'
+import type { Container, HostService, Probe, Project, Relation, RequestRow, Service, Topology } from './api'
+import { buildTimeline, entryDevice, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScript, simulationScript, upstreamDevice } from './flow'
 
 const container = (overrides: Partial<Container> = {}): Container =>
   ({ id: 'c', name: 'c', image: 'app:1', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: '', service: '', metrics: {}, ...overrides }) as Container
@@ -195,5 +195,90 @@ describe('시간표', () => {
     expect(previousStepStart(timeline, second + 1000)).toBe(second)
     expect(previousStepStart(timeline, second + 10)).toBe(0)
     expect(previousStepStart(timeline, 10)).toBe(0)
+  })
+})
+
+describe('API 요청', () => {
+  const request = (overrides: Partial<RequestRow> = {}): RequestRow => ({
+    id: 1, at: '2026-11-06T03:00:00Z', service: 'nginx', method: 'GET', path: '/api/posts', proto: 'HTTP/1.1', status: 200, bytes: 1500, duration_ms: 52, upstream: '172.20.0.3:8080', upstream_ms: 48, ...overrides,
+  })
+  const api = service('blog/api', {}, [container({ networks: [{ network: 'blog_default', ip: '172.20.0.3' }] })])
+  const data = topology([api], [], [nginx])
+
+  it('외부에서 프록시와 서비스를 거쳐 되돌아 나온다', () => {
+    const packets = requestScript([request()], data)!.steps[0].packets
+    expect(packets.map((packet) => packet.path)).toEqual([
+      ['internet', 'host', 'hostsvc:nginx'],
+      ['hostsvc:nginx', 'svc:blog/api'],
+      ['svc:blog/api', 'hostsvc:nginx'],
+      ['hostsvc:nginx', 'host', 'internet'],
+    ])
+    expect(packets[2].durationMS).toBe(48)
+    expect(packets[3].durationMS).toBe(52)
+    expect(packets[3].bytes).toBe(1500)
+    expect(packets[3].result).toBe('200')
+    expect(packets[0].at).toBe('2026-11-06T03:00:00Z')
+  })
+
+  it('로그에 없는 값은 비워 두고 뒤쪽을 지어내지 않는다', () => {
+    const script = requestScript([request({ upstream: '', upstream_ms: null, duration_ms: null, bytes: null })], data)!
+    const packets = script.steps[0].packets
+    expect(packets).toHaveLength(2)
+    expect(packets[1].durationMS).toBeNull()
+    expect(packets[1].bytes).toBeNull()
+    expect(script.steps[0].description).toContain('적혀 있지 않아')
+    expect(packets.flatMap((packet) => packet.path)).not.toContain('svc:blog/api')
+  })
+
+  it('구성에 없는 전달 주소는 잇지 않고 그렇게 밝힌다', () => {
+    const script = requestScript([request({ upstream: '10.9.9.9:80' })], data)!
+    expect(script.steps[0].packets.flatMap((packet) => packet.path)).not.toContain('svc:blog/api')
+    expect(script.steps[0].description).toContain('10.9.9.9:80')
+  })
+
+  it('5xx는 실패로 표시하고 전달 대상의 응답이 없으면 그리지 않는다', () => {
+    const packets = requestScript([request({ status: 504, upstream_ms: null })], data)!.steps[0].packets
+    expect(packets.map((packet) => packet.kind)).toEqual(['request', 'request', 'fail'])
+    expect(packets[2].title).toBe('504')
+  })
+
+  it('4xx는 서버 장애로 표시하지 않는다', () => {
+    const packets = requestScript([request({ status: 404, upstream: '', upstream_ms: null })], data)!.steps[0].packets
+    expect(packets[packets.length - 1].kind).toBe('response')
+  })
+
+  it('최근 요청을 시간순으로 재생하고 개수를 제한한다', () => {
+    const rows = Array.from({ length: 12 }, (_, index) => request({ id: index + 1, at: new Date(Date.UTC(2026, 10, 6, 3, 0, 12 - index)).toISOString() }))
+    const script = requestScript(rows, data)!
+    expect(script.steps).toHaveLength(8)
+    expect(script.steps.map((step) => Number(step.id))).toEqual([8, 7, 6, 5, 4, 3, 2, 1])
+    expect(script.facts[0][1]).toContain('12건')
+  })
+
+  it('요청이 없으면 대본을 만들지 않는다', () => {
+    expect(requestScript([], data)).toBeUndefined()
+  })
+
+  it('데모는 가짜라고 밝히고 실제는 한계를 밝힌다', () => {
+    expect(requestScript([request()], data, true)!.note).toContain('가짜')
+    const note = requestScript([request()], data)!.note
+    expect(note).toContain('실제 요청')
+    expect(note).toContain('서비스끼리')
+  })
+
+  it('프록시를 구성에서 찾는다', () => {
+    expect(entryDevice('nginx', data)).toBe('hostsvc:nginx')
+    expect(entryDevice('blog/api', data)).toBe('svc:blog/api')
+    expect(entryDevice('없음', data)).toBe('host')
+    expect(requestScript([request({ service: '없음', upstream: '' })], data)!.steps[0].packets[0].path).toEqual(['internet', 'host'])
+  })
+
+  it('전달 주소를 컨테이너 IP와 루프백 공개 포트에서 찾는다', () => {
+    const published = service('blog/web', {}, [container({ ports: [{ host_ip: '127.0.0.1', host_port: 18080, container_port: 80, proto: 'tcp' }] })])
+    const both = topology([api, published])
+    expect(upstreamDevice('172.20.0.3:8080', both)?.id).toBe('svc:blog/api')
+    expect(upstreamDevice('127.0.0.1:18080', both)?.id).toBe('svc:blog/web')
+    expect(upstreamDevice('127.0.0.1:9999', both)).toBeUndefined()
+    expect(upstreamDevice('', both)).toBeUndefined()
   })
 })

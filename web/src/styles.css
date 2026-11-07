@@ -1739,7 +1739,7 @@ p {
 .packet-row {
   display: grid;
   width: 100%;
-  grid-template-columns: 42px 76px minmax(90px, 160px) minmax(90px, 160px) 92px minmax(180px, 1fr) 96px 88px;
+  grid-template-columns: 42px 76px minmax(90px, 160px) minmax(90px, 160px) 82px minmax(180px, 1fr) 72px 72px 68px;
   align-items: center;
   column-gap: 10px;
   padding: 0 10px;
@@ -1881,4 +1881,21 @@ button.packet-row.current {
 .export-button:disabled {
   opacity: 0.55;
   cursor: progress;
+}
+
+/* 실제 API 요청의 경로다. 응답 확인과 구분한다. */
+.react-flow__edge.edge-activity.request.ok path.react-flow__edge-path {
+  stroke: #1f6fe0;
+}
+
+.edge-activity.request.ok .activity-dot {
+  fill: #1f6fe0;
+}
+
+.marker-request {
+  fill: #1f6fe0;
+}
+
+.line.request {
+  border-top: 2px dashed #1f6fe0;
 }

@@ -37,6 +37,11 @@ fi
 chown root:msp-central /etc/msp/central.json
 chmod 640 /etc/msp/central.json
 if [ ! -e /etc/msp/agent.json ]; then
+    # nginx 접근 로그가 있으면 실제 API 요청을 읽는다. 로그를 읽기만 하고 nginx 설정은 바꾸지 않는다.
+    access_logs='[]'
+    if [ -e /var/log/nginx/access.log ]; then
+        access_logs='[{ "service": "nginx", "path": "/var/log/nginx/access.log" }]'
+    fi
     (umask 027; cat > /etc/msp/agent.json <<JSON
 {
   "central_url": "http://127.0.0.1:8787",
@@ -45,7 +50,8 @@ if [ ! -e /etc/msp/agent.json ]; then
   "docker_socket": "/var/run/docker.sock",
   "spool_dir": "/var/lib/msp-agent/spool",
   "spool_max_mb": 50,
-  "disk_path": "/"
+  "disk_path": "/",
+  "access_logs": $access_logs
 }
 JSON
 )

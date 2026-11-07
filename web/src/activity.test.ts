@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
+import type { RequestRow } from './api'
 import type { Container, EventRow, Probe, Service, Topology } from './api'
-import { diffActivities, eventActivity, mergeCallouts, type Activity } from './activity'
+import { diffActivities, eventActivity, mergeCallouts, requestActivities, type Activity } from './activity'
 
 const container = (id: string): Container => ({ id, name: 'c', image: 'x', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: 'blog', service: 'api', metrics: {} })
 const probe = (overrides: Partial<Probe> = {}): Probe => ({ vantage: 'internal', target: 'GET /health', state: 'ok', failures: 0, last_checked: 't1', latency_ms: 12, ...overrides })
@@ -99,5 +100,36 @@ describe('mergeCallouts', () => {
   it('합칠 때 줄 수를 제한하고 나머지는 건수로 남긴다', () => {
     const merged = mergeCallouts(['1', '2', '3', '4', '5'].map((id) => activity({ id, lines: [`줄${id}`] })))
     expect(merged[0].lines).toEqual(['줄1', '줄2', '외 3건'])
+  })
+})
+
+describe('API 요청 경로', () => {
+  const row = (overrides: Partial<RequestRow> = {}): RequestRow => ({ id: 1, at: '2026-11-06T03:00:00Z', service: 'nginx', method: 'GET', path: '/a', proto: 'HTTP/1.1', status: 200, bytes: 1, duration_ms: 5, upstream: '', upstream_ms: null, ...overrides })
+  const data = { projects: [{ key: 'blog', status: 'ok', services: [{ key: 'blog/api', name: 'api', containers: [{ networks: [{ network: 'n', ip: '10.0.0.3' }] }], probes: [] }] }], networks: [], relations: [], host_services: [{ name: 'nginx', evidence: 'config', listening: true, ports: [] }] } as unknown as Topology
+
+  it('정상 요청은 경로만 그린다', () => {
+    const [activity] = requestActivities([row()], data, 100)
+    expect(activity).toMatchObject({ from: 'internet', to: 'hostsvc:nginx', quiet: true, request: true, until: 2300 })
+  })
+
+  it('전달 대상을 알면 다음 구간도 그린다', () => {
+    const list = requestActivities([row({ upstream: '10.0.0.3:80' })], data, 100)
+    expect(list.map((item) => `${item.from}>${item.to}`)).toEqual(['internet>hostsvc:nginx', 'hostsvc:nginx>svc:blog/api'])
+  })
+
+  it('전달 대상을 모르면 잇지 않는다', () => {
+    expect(requestActivities([row({ upstream: '9.9.9.9:80' })], data, 100)).toHaveLength(1)
+  })
+
+  it('요청이 몰려도 경로마다 한 번만 그린다', () => {
+    const list = requestActivities(Array.from({ length: 50 }, (_, id) => row({ id })), data, 100)
+    expect(list).toHaveLength(1)
+    expect(list[0].lines).toContain('이 경로로 50건')
+  })
+
+  it('5xx는 카드로 알린다', () => {
+    const [activity] = requestActivities([row(), row({ id: 2, status: 504, path: '/slow', duration_ms: 5000 })], data, 100)
+    expect(activity).toMatchObject({ tone: 'fail', quiet: false, title: 'GET /slow' })
+    expect(activity.lines[0]).toBe('504 · 5000ms')
   })
 })

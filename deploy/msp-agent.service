@@ -6,8 +6,11 @@ After=network.target msp-central.service
 Slice=msp.slice
 User=msp-agent
 Group=msp-agent
-# Docker 소켓 읽기에만 필요하다. 클라이언트는 GET과 허용 경로 외의 요청을 보내지 않는다.
-SupplementaryGroups=docker
+# docker는 소켓 읽기에, adm은 nginx 접근 로그 읽기에 필요하다. 클라이언트는 GET과 허용 경로 외의 요청을 보내지 않는다.
+SupplementaryGroups=docker adm
+# adm 그룹은 시스템 로그 전체를 읽을 수 있으므로 /var/log에서 nginx 로그만 보이게 한다.
+TemporaryFileSystem=/var/log:ro
+BindReadOnlyPaths=-/var/log/nginx
 StateDirectory=msp-agent
 StateDirectoryMode=0700
 Environment=GOMEMLIMIT=64MiB

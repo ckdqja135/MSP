@@ -33,6 +33,7 @@ type Batch struct {
 	Samples         []Sample   `json:"samples,omitempty"`
 	Gaps            []Gap      `json:"gaps,omitempty"`
 	Probes          []Probe    `json:"probes,omitempty"`
+	Requests        []Request  `json:"requests,omitempty"`
 }
 
 type Ack struct {
@@ -250,6 +251,21 @@ type Probe struct {
 	Failure    string    `json:"failure,omitempty"`
 	LatencyMS  *int64    `json:"latency_ms,omitempty"`
 	TimeoutMS  int64     `json:"timeout_ms,omitempty"`
+}
+
+// Request는 프록시 접근 로그에서 읽은 실제 API 요청이다. 클라이언트 주소와 쿼리 문자열은 담지 않는다.
+// 로그에 없는 값은 비워 둔다. 소요 시간과 전달 대상은 로그 형식에 따라 없을 수 있다.
+type Request struct {
+	At         time.Time `json:"at"`
+	Service    string    `json:"service"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Proto      string    `json:"proto,omitempty"`
+	Status     int       `json:"status"`
+	Bytes      *int64    `json:"bytes,omitempty"`
+	DurationMS *int64    `json:"duration_ms,omitempty"`
+	Upstream   string    `json:"upstream,omitempty"`
+	UpstreamMS *int64    `json:"upstream_ms,omitempty"`
 }
 
 const HostScope = "host"

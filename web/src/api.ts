@@ -206,6 +206,25 @@ export function fetchGaps(server: string, from: string, to: string) {
   return get<GapRow[]>(`/servers/${encodeURIComponent(server)}/gaps`, new URLSearchParams({ from, to }))
 }
 
+// RequestRow는 프록시 접근 로그에서 읽은 요청이다. 로그에 없는 값은 null이다.
+export interface RequestRow {
+  id: number
+  at: string
+  service: string
+  method: string
+  path: string
+  proto: string
+  status: number
+  bytes: number | null
+  duration_ms: number | null
+  upstream: string
+  upstream_ms: number | null
+}
+
+export function fetchRequests(server: string, from: string, to: string, limit: number) {
+  return get<RequestRow[]>(`/servers/${encodeURIComponent(server)}/requests`, new URLSearchParams({ from, to, limit: String(limit) }))
+}
+
 export interface SampleSeries {
   name: string
   points: { t: number; v: number }[]
