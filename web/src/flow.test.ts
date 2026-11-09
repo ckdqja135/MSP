@@ -281,6 +281,38 @@ describe('API 요청', () => {
     expect(upstreamDevice('127.0.0.1:9999', both)).toBeUndefined()
     expect(upstreamDevice('', both)).toBeUndefined()
   })
+
+  it('IPv6 루프백과 모든 주소에 공개한 포트를 찾고 다른 주소에만 묶인 포트는 잇지 않는다', () => {
+    const open = service('blog/web', {}, [container({ ports: [{ host_ip: '0.0.0.0', host_port: 8080, container_port: 80, proto: 'tcp' }, { host_ip: '::', host_port: 8080, container_port: 80, proto: 'tcp' }] })])
+    const lan = service('blog/admin', {}, [container({ ports: [{ host_ip: '192.168.0.10', host_port: 9090, container_port: 80, proto: 'tcp' }] })])
+    const data = topology([open, lan])
+    expect(upstreamDevice('[::1]:8080', data)?.id).toBe('svc:blog/web')
+    expect(upstreamDevice('127.0.0.1:8080', data)?.id).toBe('svc:blog/web')
+    expect(upstreamDevice('127.0.0.1:9090', data)).toBeUndefined()
+  })
+
+  it('루프백 포트를 연 호스트 서비스도 전달 대상으로 찾는다', () => {
+    const fpm: HostService = { name: 'php-fpm', ports: [{ ip: '127.0.0.1', port: 9000 }], evidence: 'name-match', listening: true }
+    const data = topology([], [], [nginx, fpm])
+    expect(upstreamDevice('127.0.0.1:9000', data)).toEqual({ id: 'hostsvc:php-fpm', name: 'php-fpm' })
+    expect(upstreamDevice('10.0.0.5:9000', data)).toBeUndefined()
+  })
+
+  it('전달 대상을 몇 건 찾았는지 밝히고 기록이 없으면 로그 형식을 안내한다', () => {
+    const rows = [request({ id: 1 }), request({ id: 2, upstream: '10.9.9.9:80' }), request({ id: 3, upstream: '', upstream_ms: null })]
+    const facts = Object.fromEntries(requestScript(rows, data)!.facts)
+    expect(facts['전달 대상']).toBe('1건 확인 · 1건 구성에서 못 찾음 · 1건 기록 없음')
+    const none = requestScript([request({ upstream: '', upstream_ms: null })], data)!
+    expect(Object.fromEntries(none.facts)['전달 대상']).toBe('로그에 기록 없음')
+    expect(none.note).toContain('$upstream_addr')
+    expect(requestScript(rows, data)!.note).not.toContain('$upstream_addr')
+  })
+
+  it('프록시가 자기 자신으로 보낸 요청은 선을 잇지 않는다', () => {
+    const step = requestScript([request({ upstream: '127.0.0.1:80' })], topology([], [], [nginx]))!.steps[0]
+    expect(step.packets).toHaveLength(2)
+    expect(step.description).toContain('자기 자신')
+  })
 })
 
 describe('실시간 API 요청', () => {

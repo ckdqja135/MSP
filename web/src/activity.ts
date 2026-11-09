@@ -109,7 +109,7 @@ export function requestActivities(requests: RequestRow[], topology: Topology, no
     const entry = entryDevice(request.service, topology)
     add('internet', entry, request)
     const target = upstreamDevice(request.upstream, topology)
-    if (target && entry !== 'host') add(entry, target.id, request)
+    if (target && entry !== 'host' && target.id !== entry) add(entry, target.id, request)
   }
   return [...routes.values()].map(({ from, to, rows }) => {
     const latest = rows[rows.length - 1]

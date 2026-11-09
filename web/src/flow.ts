@@ -316,20 +316,28 @@ export function entryDevice(service: string, topology: Topology): string {
   return 'host'
 }
 
+// acceptsLocal은 서버 자신에게 보낸 연결을 그 바인딩이 받는지 본다. 다른 주소에만 묶인 포트는 받지 않는다.
+function acceptsLocal(bind: string | undefined, host: string): boolean {
+  return !bind || bind === host || bind === '::' || (bind === '0.0.0.0' && !host.includes(':'))
+}
+
 // upstreamDevice는 로그에 적힌 전달 주소를 구성에서 찾는다. 찾지 못하면 뒤쪽을 그리지 않는다.
 export function upstreamDevice(upstream: string, topology: Topology): { id: string; name: string } | undefined {
   const index = upstream.lastIndexOf(':')
   if (index < 0) return undefined
-  const host = upstream.slice(0, index)
+  const host = upstream.slice(0, index).replace(/^\[(.*)\]$/, '$1')
   const port = Number(upstream.slice(index + 1))
+  const loopback = isLoopbackAddress(host)
   for (const service of topology.projects.flatMap((project) => project.services)) {
     for (const container of service.containers) {
       const byAddress = container.networks?.some((network) => network.ip === host)
-      const byPublished = isLoopbackAddress(host) && container.ports?.some((item) => item.host_port === port)
+      const byPublished = loopback && container.ports?.some((item) => item.host_port === port && acceptsLocal(item.host_ip, host))
       if (byAddress || byPublished) return { id: `svc:${service.key}`, name: serviceLabel(service.key) }
     }
   }
-  return undefined
+  if (!loopback) return undefined
+  const owner = (topology.host_services ?? []).find((item) => item.listening && item.ports.some((bind) => bind.port === port && acceptsLocal(bind.ip, host)))
+  return owner ? { id: `hostsvc:${hostServiceKey(owner)}`, name: hostServiceName(owner) } : undefined
 }
 
 const MAX_REQUEST_STEPS = 8
@@ -340,7 +348,8 @@ export function requestStep(request: RequestRow, topology: Topology): FlowStep {
   const inward = entry === 'host' ? ['internet', 'host'] : ['internet', 'host', entry]
   const protocol = request.proto || 'HTTP'
   const failed = request.status >= 500
-  const target = upstreamDevice(request.upstream, topology)
+  const found = upstreamDevice(request.upstream, topology)
+  const target = found?.id === entry ? undefined : found
   const key = String(request.id)
   const base = { protocol, at: request.at }
   const packets: FlowPacket[] = [
@@ -359,6 +368,8 @@ export function requestStep(request: RequestRow, topology: Topology): FlowStep {
   let description = `접근 로그에 전달 대상이 적혀 있지 않아 ${request.service} 뒤쪽은 그리지 않습니다.`
   if (target) {
     description = `${request.service}가 ${target.name}로 전달한 요청입니다.`
+  } else if (found) {
+    description = `${request.service}가 자기 자신(${request.upstream})으로 다시 보낸 요청입니다.`
   } else if (request.upstream) {
     description = `전달 주소 ${request.upstream}를 지금 구성에서 찾지 못해 ${request.service} 뒤쪽은 그리지 않습니다.`
   }
@@ -377,19 +388,36 @@ export function requestScript(requests: RequestRow[], topology: Topology, demo =
   if (requests.length === 0) return undefined
   const recent = [...requests].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-MAX_REQUEST_STEPS)
   const failed = requests.filter((request) => request.status >= 500).length
+  const forwarded = requests.filter((request) => request.upstream)
+  let note = demo
+    ? '데모용 가짜 요청입니다. 실제 서버에 연결하면 접근 로그에서 읽은 실제 요청이 나옵니다.'
+    : '접근 로그에서 읽은 실제 요청입니다. 쿼리 문자열과 클라이언트 주소는 저장하지 않습니다. 서비스끼리 주고받는 호출은 이 로그에 없어 보이지 않습니다.'
+  if (!demo && forwarded.length === 0) {
+    note += ' 지금 요청에는 전달 주소가 없어 프록시 뒤 컨테이너는 그리지 않습니다. nginx 로그 형식에 ua="$upstream_addr"를 덧붙이면 이어집니다.'
+  }
   return {
     source: 'requests',
     title: `최근 API 요청 ${recent.length}건`,
-    note: demo
-      ? '데모용 가짜 요청입니다. 실제 서버에 연결하면 접근 로그에서 읽은 실제 요청이 나옵니다.'
-      : '접근 로그에서 읽은 실제 요청입니다. 쿼리 문자열과 클라이언트 주소는 저장하지 않습니다. 서비스끼리 주고받는 호출은 이 로그에 없어 보이지 않습니다.',
+    note,
     steps: recent.map((request) => requestStep(request, topology)),
     facts: [
       ['조회한 요청', `${requests.length}건 (5xx ${failed}건)`],
+      ['전달 대상', forwardSummary(requests.length, forwarded, topology)],
       ['재생', `최근 ${recent.length}건`],
       ['간격', '실제 시간과 다릅니다'],
     ],
   }
+}
+
+// forwardSummary는 전달 주소를 구성에서 몇 건 찾았는지 센다. 전달 주소가 없으면 직접 응답했거나 로그 형식에 값이 없는 것이다.
+function forwardSummary(total: number, forwarded: RequestRow[], topology: Topology): string {
+  if (forwarded.length === 0) return '로그에 기록 없음'
+  const found = forwarded.filter((request) => upstreamDevice(request.upstream, topology)).length
+  return [
+    `${found}건 확인`,
+    forwarded.length > found ? `${forwarded.length - found}건 구성에서 못 찾음` : '',
+    total > forwarded.length ? `${total - forwarded.length}건 기록 없음` : '',
+  ].filter(Boolean).join(' · ')
 }
 
 // 실시간으로 보여주는 요청의 수다. 넘으면 오래된 것부터 뺀다.

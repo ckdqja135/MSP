@@ -69,6 +69,19 @@ func TestParseRetriedUpstreamUsesLastOne(t *testing.T) {
 	}
 }
 
+func TestParseInternalRedirectUsesLastUpstream(t *testing.T) {
+	request, ok := Parse(combined+` rt=0.2 urt="0.05 : 0.12" ua="127.0.0.1:8080 : [::1]:9000"`, "nginx")
+	if !ok {
+		t.Fatal("내부 이동 형식을 읽지 못했다")
+	}
+	if request.Upstream != "[::1]:9000" {
+		t.Errorf("전달 대상 = %q", request.Upstream)
+	}
+	if request.UpstreamMS == nil || *request.UpstreamMS != 120 {
+		t.Errorf("전달 소요 = %v", request.UpstreamMS)
+	}
+}
+
 func TestParseUnknownUpstreamStaysEmpty(t *testing.T) {
 	request, ok := Parse(combined+` rt=0.001 urt="-" ua="-"`, "nginx")
 	if !ok {

@@ -87,7 +87,6 @@ func cleanPath(raw string) string {
 }
 
 func seconds(value string) *int64 {
-	// nginx는 재시도한 경우 값을 쉼표로 이어 적는다. 실제로 응답한 마지막 값을 쓴다.
 	value = lastUpstream(value)
 	parsed, err := strconv.ParseFloat(value, 64)
 	if err != nil || parsed < 0 {
@@ -97,7 +96,11 @@ func seconds(value string) *int64 {
 	return &ms
 }
 
+// lastUpstream은 실제로 응답한 마지막 값을 고른다. nginx는 재시도하면 쉼표로, 내부 이동이 있으면 " : "로 값을 이어 적는다.
 func lastUpstream(value string) string {
+	if index := strings.LastIndex(value, " : "); index >= 0 {
+		value = value[index+3:]
+	}
 	parts := strings.Split(value, ",")
 	last := strings.TrimSpace(parts[len(parts)-1])
 	if last == "-" {
