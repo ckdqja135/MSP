@@ -1,9 +1,9 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import type { EventRow, GapRow, Meta, Server, Topology } from '../api'
-import { parseTarget, updateContext, type ConsoleContext } from '../context'
+import { updateContext, type ConsoleContext } from '../context'
 import { formatClock, formatDuration, formatSize, isLateArrival } from '../format'
-import { CATEGORY_LABEL, UNKNOWN_HOST_LABEL, UNKNOWN_HOST_SERVICE, evidenceLabel, serviceLabel, sourceLabel, typeLabel } from '../status'
+import { CATEGORY_LABEL, evidenceLabel, sourceLabel, targetLabel, typeLabel } from '../status'
 import type { FlowSource } from '../flow'
 import type { FlowPlayer } from '../useFlowPlayer'
 import type { FlowData, FlowRecord } from '../useFlowRecords'
@@ -141,15 +141,6 @@ function FlowTable({ flow, selectedID }: { flow: FlowData; selectedID?: string }
   )
 }
 
-function targetLabel(target?: string): string | undefined {
-  const parsed = parseTarget(target)
-  if (!parsed || parsed.kind === 'host') return undefined
-  if (parsed.kind === 'service') return serviceLabel(parsed.key)
-  if (parsed.kind === 'network') return `네트워크 ${parsed.name}`
-  if (parsed.kind === 'hostService') return parsed.name === UNKNOWN_HOST_SERVICE ? UNKNOWN_HOST_LABEL : parsed.name
-  return `프로젝트 ${parsed.key === '_standalone' ? '미분류' : parsed.key}`
-}
-
 interface Props {
   meta?: Meta
   context: ConsoleContext
@@ -163,13 +154,14 @@ interface Props {
   onToggleCollapsed: () => void
   player: FlowPlayer
   source: FlowSource
+  requestEmpty?: string
   sources: Record<FlowSource, boolean>
   onSource: (source: FlowSource) => void
   liveAvailable: boolean
   onLive: (on: boolean) => void
 }
 
-export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed, player, source, sources, onSource, liveAvailable, onLive }: Props) {
+export function BottomPanel({ meta, context, flow, selectedID, server, topology, selectedEvent, now, collapsed, onToggleCollapsed, player, source, requestEmpty, sources, onSource, liveAvailable, onLive }: Props) {
   const selectedCategories = context.categories ? context.categories.split(',') : Object.keys(CATEGORY_LABEL)
   const toggleCategory = (category: string) => {
     const next = selectedCategories.includes(category)
@@ -248,6 +240,13 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
             {exportNote && <span className="export-note" role="status">{exportNote}</span>}
           </>
         )}
+        {!collapsed && context.tab === 'play' && label && (
+          <div className="filters">
+            <button type="button" className="target-chip" title="대상 선택 해제. 서버 전체의 통신을 봅니다" onClick={() => updateContext({ target: undefined, event: undefined })}>
+              대상: {label} ✕
+            </button>
+          </div>
+        )}
         {!collapsed && context.tab === 'flow' && (
           <>
             <span className="omitted">
@@ -277,7 +276,7 @@ export function BottomPanel({ meta, context, flow, selectedID, server, topology,
       {!collapsed && context.tab === 'play' && (
         <>
           <FlowControls player={player} source={source} sources={sources} onSource={onSource} demo={meta?.mode === 'demo'} liveAvailable={liveAvailable} onLive={onLive} />
-          <FlowPacketTable player={player} source={source} />
+          <FlowPacketTable player={player} source={source} emptyText={source === 'requests' ? requestEmpty : undefined} />
         </>
       )}
       {!collapsed && context.tab === 'flow' && <FlowTable flow={flow} selectedID={selectedID} />}

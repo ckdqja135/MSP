@@ -2,7 +2,8 @@ import type { HostService, Probe, RequestRow, Service, Topology } from './api'
 import { parseTarget } from './context'
 import { isLoopbackAddress } from './format'
 import { serviceRole } from './scene'
-import { hostServiceKey, hostServiceName, serviceLabel } from './status'
+import { hostServiceKey, hostServiceName, serviceLabel, targetLabel } from './status'
+import { targetServices } from './useFlowRecords'
 
 // 통신 재생의 대본과 시간표다. 그리는 코드와 분리해 시간을 인자로 받아 시험할 수 있게 한다.
 
@@ -383,26 +384,65 @@ export function requestStep(request: RequestRow, topology: Topology): FlowStep {
   }
 }
 
+// RequestScope는 통신 재생을 고른 대상으로 좁힌다. 서버 전체를 고르면 만들지 않는다.
+export interface RequestScope {
+  name: string
+  devices: string[]
+  // 공개 포트가 있으면 프록시를 거치지 않고 직접 들어오는 접속이 있을 수 있다.
+  published: boolean
+}
+
+export function requestScope(target: string | undefined, topology: Topology): RequestScope | undefined {
+  const parsed = parseTarget(target)
+  const name = targetLabel(target)
+  if (!parsed || !name) return undefined
+  if (parsed.kind === 'hostService') return { name, devices: [`hostsvc:${parsed.name}`], published: false }
+  const keys = targetServices(target, topology) ?? []
+  const services = topology.projects.flatMap((project) => project.services).filter((service) => keys.includes(service.key))
+  return { name, devices: keys.map((key) => `svc:${key}`), published: services.some((service) => publicPorts(service).length > 0) }
+}
+
+// inScope는 요청이 고른 대상에 닿았는지 본다. 요청을 받은 프록시나 전달 대상 중 하나가 대상이면 넣는다.
+function inScope(request: RequestRow, scope: RequestScope, topology: Topology): boolean {
+  const target = upstreamDevice(request.upstream, topology)
+  return scope.devices.includes(entryDevice(request.service, topology)) || (target !== undefined && scope.devices.includes(target.id))
+}
+
+const DIRECT_NOTE = '공개 포트로 직접 들어온 접속은 프록시를 거치지 않아 접근 로그에 남지 않습니다.'
+
+function scopeNote(scope: RequestScope): string {
+  return ` 고른 대상 ${scope.name}에 닿은 요청만 보여줍니다.${scope.published ? ` ${DIRECT_NOTE}` : ''}`
+}
+
+// scopedEmptyText는 고른 대상에 닿은 요청이 없을 때의 안내다. 서버 전체 요청으로 대신 채우지 않는다.
+export function scopedEmptyText(scope: RequestScope, searched: number): string {
+  const head = searched > 0 ? `조회한 요청 ${searched}건 중 ${scope.name}에 닿은 요청이 없습니다.` : '이 구간에 접근 로그에서 읽은 요청이 없습니다.'
+  return [head, '서버 전체 요청을 대신 보여주지 않습니다.', ...(scope.published ? [DIRECT_NOTE] : [])].join(' ')
+}
+
 // requestScript는 접근 로그에서 읽은 최근 요청을 재생한다. 요청 사이의 간격은 실제 시간이 아니다.
-export function requestScript(requests: RequestRow[], topology: Topology, demo = false): FlowScript | undefined {
-  if (requests.length === 0) return undefined
-  const recent = [...requests].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-MAX_REQUEST_STEPS)
-  const failed = requests.filter((request) => request.status >= 500).length
-  const forwarded = requests.filter((request) => request.upstream)
+export function requestScript(requests: RequestRow[], topology: Topology, demo = false, scope?: RequestScope): FlowScript | undefined {
+  const rows = scope ? requests.filter((request) => inScope(request, scope, topology)) : requests
+  if (rows.length === 0) return undefined
+  const recent = [...rows].sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.id - b.id).slice(-MAX_REQUEST_STEPS)
+  const failed = rows.filter((request) => request.status >= 500).length
+  const forwarded = rows.filter((request) => request.upstream)
   let note = demo
     ? '데모용 가짜 요청입니다. 실제 서버에 연결하면 접근 로그에서 읽은 실제 요청이 나옵니다.'
     : '접근 로그에서 읽은 실제 요청입니다. 쿼리 문자열과 클라이언트 주소는 저장하지 않습니다. 서비스끼리 주고받는 호출은 이 로그에 없어 보이지 않습니다.'
   if (!demo && forwarded.length === 0) {
     note += ' 지금 요청에는 전달 주소가 없어 프록시 뒤 컨테이너는 그리지 않습니다. nginx 로그 형식에 ua="$upstream_addr"를 덧붙이면 이어집니다.'
   }
+  if (scope) note += scopeNote(scope)
   return {
     source: 'requests',
-    title: `최근 API 요청 ${recent.length}건`,
+    title: scope ? `${scope.name} 최근 요청 ${recent.length}건` : `최근 API 요청 ${recent.length}건`,
     note,
     steps: recent.map((request) => requestStep(request, topology)),
     facts: [
-      ['조회한 요청', `${requests.length}건 (5xx ${failed}건)`],
-      ['전달 대상', forwardSummary(requests.length, forwarded, topology)],
+      ...(scope ? ([['대상', `${scope.name} · 조회한 ${requests.length}건 중 ${rows.length}건`]] as [string, string][]) : []),
+      ['조회한 요청', `${rows.length}건 (5xx ${failed}건)`],
+      ['전달 대상', forwardSummary(rows.length, forwarded, topology)],
       ['재생', `최근 ${recent.length}건`],
       ['간격', '실제 시간과 다릅니다'],
     ],
@@ -423,15 +463,17 @@ function forwardSummary(total: number, forwarded: RequestRow[], topology: Topolo
 // 실시간으로 보여주는 요청의 수다. 넘으면 오래된 것부터 뺀다.
 export const LIVE_MAX_STEPS = 30
 
-export function liveRequestScript(steps: FlowStep[], demo = false): FlowScript {
+export function liveRequestScript(steps: FlowStep[], demo = false, scope?: RequestScope): FlowScript {
+  const note = demo
+    ? '데모용 가짜 요청을 들어오는 대로 보여줍니다.'
+    : '접근 로그에 새로 적힌 요청을 들어오는 대로 보여줍니다. 수집과 전송 때문에 몇 초 늦게 나타납니다.'
   return {
     source: 'requests',
-    title: '실시간 API 요청',
-    note: demo
-      ? '데모용 가짜 요청을 들어오는 대로 보여줍니다.'
-      : '접근 로그에 새로 적힌 요청을 들어오는 대로 보여줍니다. 수집과 전송 때문에 몇 초 늦게 나타납니다.',
+    title: scope ? `${scope.name} 실시간 요청` : '실시간 API 요청',
+    note: scope ? note + scopeNote(scope) : note,
     steps,
     facts: [
+      ...(scope ? ([['대상', scope.name]] as [string, string][]) : []),
       ['보여준 요청', `${steps.length}건`],
       ['지연', '실제보다 몇 초 늦음'],
     ],
@@ -439,12 +481,16 @@ export function liveRequestScript(steps: FlowStep[], demo = false): FlowScript {
 }
 
 // appendLiveSteps는 마지막으로 본 요청 뒤에 들어온 것만 덧붙인다. 넘치면 앞에서 뺀 수를 함께 돌려준다.
-export function appendLiveSteps(steps: FlowStep[], requests: RequestRow[], topology: Topology, lastID: number): { steps: FlowStep[]; dropped: number; lastID: number } {
+// 대상을 골랐으면 대상에 닿지 않은 요청은 건너뛰고, 덧붙일 것이 없으면 단계 목록을 그대로 돌려준다.
+export function appendLiveSteps(steps: FlowStep[], requests: RequestRow[], topology: Topology, lastID: number, scope?: RequestScope): { steps: FlowStep[]; dropped: number; lastID: number } {
   const fresh = requests.filter((request) => request.id > lastID).sort((a, b) => a.id - b.id)
   if (fresh.length === 0) return { steps, dropped: 0, lastID }
-  const all = [...steps, ...fresh.map((request) => requestStep(request, topology))]
+  const last = fresh[fresh.length - 1].id
+  const shown = scope ? fresh.filter((request) => inScope(request, scope, topology)) : fresh
+  if (shown.length === 0) return { steps, dropped: 0, lastID: last }
+  const all = [...steps, ...shown.map((request) => requestStep(request, topology))]
   const dropped = Math.max(0, all.length - LIVE_MAX_STEPS)
-  return { steps: all.slice(dropped), dropped, lastID: fresh[fresh.length - 1].id }
+  return { steps: all.slice(dropped), dropped, lastID: last }
 }
 
 const STEP_INTRO_MS = 1100

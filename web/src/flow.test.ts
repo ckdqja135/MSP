@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Container, HostService, Probe, Project, Relation, RequestRow, Service, Topology } from './api'
-import { appendLiveSteps, buildTimeline, entryDevice, LIVE_MAX_STEPS, liveRequestScript, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScript, simulationScript, upstreamDevice } from './flow'
+import { appendLiveSteps, buildTimeline, entryDevice, LIVE_MAX_STEPS, liveRequestScript, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScope, requestScript, scopedEmptyText, simulationScript, upstreamDevice } from './flow'
 
 const container = (overrides: Partial<Container> = {}): Container =>
   ({ id: 'c', name: 'c', image: 'app:1', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: '', service: '', metrics: {}, ...overrides }) as Container
@@ -312,6 +312,58 @@ describe('API 요청', () => {
     const step = requestScript([request({ upstream: '127.0.0.1:80' })], topology([], [], [nginx]))!.steps[0]
     expect(step.packets).toHaveLength(2)
     expect(step.description).toContain('자기 자신')
+  })
+})
+
+describe('고른 대상의 요청', () => {
+  const request = (id: number, upstream: string): RequestRow => ({
+    id, at: new Date(Date.UTC(2026, 10, 6, 3, 0, id)).toISOString(), service: 'nginx', method: 'GET', path: `/p/${id}`, proto: 'HTTP/1.1', status: 200, bytes: 10, duration_ms: 5, upstream, upstream_ms: 4,
+  })
+  const api = service('blog/api', {}, [container({ networks: [{ network: 'blog_default', ip: '172.20.0.3' }] })])
+  const dev = service('blog/dev', {}, [container({ ports: [{ host_ip: '0.0.0.0', host_port: 3005, container_port: 3005, proto: 'tcp' }] })])
+  const data = topology([api, dev], [], [nginx])
+  const rows = [request(1, '172.20.0.3:8080'), request(2, '127.0.0.1:3005'), request(3, '172.20.0.3:8080'), request(4, '')]
+
+  it('고른 것이 없거나 서버 전체면 좁히지 않는다', () => {
+    expect(requestScope(undefined, data)).toBeUndefined()
+    expect(requestScope('host', data)).toBeUndefined()
+  })
+
+  it('컨테이너를 고르면 그 컨테이너로 전달된 요청만 재생한다', () => {
+    const script = requestScript(rows, data, false, requestScope('svc:blog/api', data))!
+    expect(script.steps.map((step) => step.id)).toEqual(['1', '3'])
+    expect(script.title).toContain('blog/api')
+    expect(Object.fromEntries(script.facts)['대상']).toBe('blog/api · 조회한 4건 중 2건')
+    expect(script.note).toContain('blog/api에 닿은 요청만')
+  })
+
+  it('프록시를 고르면 프록시가 받은 요청을 모두 재생한다', () => {
+    expect(requestScript(rows, data, false, requestScope('hostsvc:nginx', data))!.steps).toHaveLength(4)
+  })
+
+  it('프로젝트를 고르면 그 안의 서비스에 닿은 요청을 재생한다', () => {
+    expect(requestScript(rows, data, false, requestScope('project:blog', data))!.steps.map((step) => step.id)).toEqual(['1', '2', '3'])
+  })
+
+  it('대상에 닿은 요청이 없으면 전체로 대신 채우지 않고 직접 접속은 기록되지 않는다고 밝힌다', () => {
+    const scope = requestScope('svc:blog/dev', data)!
+    expect(requestScript([request(1, '172.20.0.3:8080')], data, false, scope)).toBeUndefined()
+    expect(scope.published).toBe(true)
+    const text = scopedEmptyText(scope, 1)
+    expect(text).toContain('조회한 요청 1건 중')
+    expect(text).toContain('직접 들어온 접속')
+    expect(scopedEmptyText(requestScope('svc:blog/api', data)!, 0)).not.toContain('직접 들어온 접속')
+  })
+
+  it('실시간에서는 대상에 닿은 요청만 덧붙이고 건너뛴 요청도 다시 보지 않는다', () => {
+    const scope = requestScope('svc:blog/dev', data)
+    const first = appendLiveSteps([], rows, data, 0, scope)
+    expect(first.steps.map((step) => step.id)).toEqual(['2'])
+    expect(first.lastID).toBe(4)
+    const second = appendLiveSteps(first.steps, [...rows, request(5, '172.20.0.3:8080')], data, first.lastID, scope)
+    expect(second.steps).toBe(first.steps)
+    expect(second.lastID).toBe(5)
+    expect(liveRequestScript([], false, scope).title).toBe('blog/dev 실시간 요청')
   })
 })
 

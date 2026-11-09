@@ -8,13 +8,15 @@ import { DetailPanel } from './components/DetailPanel'
 import { FlowPanel, PLAY_LABEL } from './components/FlowPlayback'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
 import { timeMode, timeWindow, updateContext, useConsoleContext } from './context'
-import { appendLiveSteps, liveRequestScript, observedScript, requestScript, simulationScript, type FlowSource, type FlowStep } from './flow'
+import { appendLiveSteps, liveRequestScript, observedScript, requestScope, requestScript, scopedEmptyText, simulationScript, type FlowSource, type FlowStep } from './flow'
 import { formatDateTime } from './format'
 import { useFlowPlayer } from './useFlowPlayer'
 import { useFlowRecords } from './useFlowRecords'
 
 const REFRESH_INTERVAL_MS = 3000
 const REQUEST_LIMIT = 100
+// 대상을 고르면 그 대상에 닿은 요청만 골라내므로 더 넓게 조회한다.
+const SCOPED_REQUEST_LIMIT = 500
 const NO_REQUESTS: RequestRow[] = []
 
 function useNow(intervalMs: number): number {
@@ -95,23 +97,28 @@ export function App() {
   // 데이터가 있으면 API 요청을 먼저 보여주고, 응답 확인, 시뮬레이션 순서로 내려간다.
   const flowTab = context.tab === 'play'
   const demo = meta.data?.mode === 'demo'
+  // 고른 대상이 있으면 통신 재생도 그 대상에 닿은 요청만 보여준다. 고른 것이 없으면 서버 전체다.
+  const scope = useMemo(() => (topology.data ? requestScope(context.target, topology.data) : undefined), [context.target, topology.data])
+  const requestLimit = scope ? SCOPED_REQUEST_LIMIT : REQUEST_LIMIT
   const requests = useQuery({
-    queryKey: [live ? 'live' : 'fixed', 'requests', server?.id, live ? context.range : [context.from, context.to, context.frozen, context.range]],
+    queryKey: [live ? 'live' : 'fixed', 'requests', server?.id, requestLimit, live ? context.range : [context.from, context.to, context.frozen, context.range]],
     queryFn: () => {
       const { from, to } = timeWindow(context, Date.now())
-      return fetchRequests(server!.id, from, to, REQUEST_LIMIT)
+      return fetchRequests(server!.id, from, to, requestLimit)
     },
     enabled: Boolean(server),
     placeholderData: (previous) => previous,
   })
   const requestRows = requests.data ?? NO_REQUESTS
-  const requested = useMemo(() => (topology.data ? requestScript(requestRows, topology.data, demo) : undefined), [requestRows, topology.data, demo])
+  const requested = useMemo(() => (topology.data ? requestScript(requestRows, topology.data, demo, scope) : undefined), [requestRows, topology.data, demo, scope])
+  const requestEmpty = scope ? scopedEmptyText(scope, requestRows.length) : undefined
   const observed = useMemo(() => (topology.data ? observedScript(topology.data, context.target, demo) : undefined), [topology.data, context.target, demo])
   const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, context.target) : undefined), [topology.data, context.target])
   const [sourceChoice, setSourceChoice] = useState<FlowSource | undefined>()
   const scripts = { requests: requested, observed, simulation }
   // 시뮬레이션은 직접 골랐을 때만 보여준다. 실제 데이터가 없을 때 예시로 대신하면 실제처럼 보이기 때문이다.
-  const source: FlowSource = sourceChoice ?? (!requested && observed ? 'observed' : 'requests')
+  // 고른 대상에 요청이 없다고 응답 확인으로 넘어가지 않는다. 없다는 안내를 보여준다.
+  const source: FlowSource = sourceChoice ?? (requestRows.length === 0 && observed ? 'observed' : 'requests')
   const player = useFlowPlayer(scripts[source])
   const resetPlayer = player.reset
   useEffect(() => {
@@ -131,18 +138,25 @@ export function App() {
     }
     liveSteps.current = []
     liveLastID.current = requestRows.reduce((max, row) => Math.max(max, row.id), 0)
-    player.startLive(liveRequestScript([], demo))
+    player.startLive(liveRequestScript([], demo, scope))
   }
   useEffect(() => {
     if (!player.live || !topology.data) return
-    const next = appendLiveSteps(liveSteps.current, requestRows, topology.data, liveLastID.current)
-    if (next.lastID === liveLastID.current) return
-    liveSteps.current = next.steps
+    const next = appendLiveSteps(liveSteps.current, requestRows, topology.data, liveLastID.current, scope)
     liveLastID.current = next.lastID
-    player.extendLive(liveRequestScript(next.steps, demo), next.dropped)
+    if (next.steps === liveSteps.current) return
+    liveSteps.current = next.steps
+    player.extendLive(liveRequestScript(next.steps, demo, scope), next.dropped)
     // 요청 목록이 바뀔 때만 덧붙인다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [requestRows, player.live])
+  // 대상을 바꾸면 재생을 처음으로 돌린다. 실시간이면 켠 채로 새 대상의 요청부터 다시 모은다.
+  useEffect(() => {
+    if (player.live) setLiveFlow(true)
+    else resetPlayer()
+    // 대상이 바뀔 때만 다시 시작한다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [context.target])
   useEffect(() => {
     if (!live) resetPlayer()
   }, [live, resetPlayer])
@@ -206,9 +220,9 @@ export function App() {
             <TopologyMap key={server.id} server={server} topology={topology.data} target={context.target} highlight={highlight} now={clock} live={live} selectedEvent={selectedEvent} focus={context.focus === '1'} layoutKey={`${panelCollapsed}|${detailOpen}`} player={flowTab ? player : undefined} requests={requestRows} flowPlayLabel={PLAY_LABEL[player.status]} onFlowPlay={player.script ? playFromMap : undefined} />
           )}
         </section>
-        {flowTab && <FlowPanel player={player} source={source} />}
+        {flowTab && <FlowPanel player={player} source={source} emptyText={source === 'requests' ? requestEmpty : undefined} />}
         {detailOpen && !flowTab && <DetailPanel meta={meta.data} server={server} topology={topology.data} target={context.target} now={clock} selectedEvent={selectedEvent} events={flow.events} />}
-        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} sources={{ requests: true, observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} liveAvailable={live} onLive={setLiveFlow} />
+        <BottomPanel meta={meta.data} context={context} flow={flow} selectedID={context.event} server={server} topology={topology.data} selectedEvent={selectedEvent} now={clock} collapsed={panelCollapsed} onToggleCollapsed={togglePanel} player={player} source={source} requestEmpty={requestEmpty} sources={{ requests: true, observed: Boolean(observed), simulation: Boolean(simulation) }} onSource={setSourceChoice} liveAvailable={live} onLive={setLiveFlow} />
       </main>
     </div>
   )

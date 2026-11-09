@@ -104,7 +104,8 @@ function PacketRow({ packet, number, current, onSeek }: { packet: FlowPacket; nu
   )
 }
 
-export function FlowPacketTable({ player, source }: { player: FlowPlayer; source: FlowSource }) {
+// emptyText는 대상을 골랐는데 그 대상에 닿은 요청이 없을 때의 안내다.
+export function FlowPacketTable({ player, source, emptyText }: { player: FlowPlayer; source: FlowSource; emptyText?: string }) {
   const packets = player.timeline?.packets ?? []
   const frame = player.frame
   const shown = packets.slice(0, frame?.delivered ?? packets.length)
@@ -114,7 +115,13 @@ export function FlowPacketTable({ player, source }: { player: FlowPlayer; source
       <div className="placeholder">
         {source === 'simulation' && <p>외부로 공개된 포트가 없어 그릴 경로가 없습니다.</p>}
         {source === 'observed' && <p>재생할 응답 확인 기록이 없습니다.</p>}
-        {source === 'requests' && (
+        {source === 'requests' && emptyText && (
+          <>
+            <p>{emptyText}</p>
+            <p className="muted small">● 실시간을 켜 두면 새 요청이 들어오는 대로 보여줍니다.</p>
+          </>
+        )}
+        {source === 'requests' && !emptyText && (
           <>
             <p>이 구간에 접근 로그에서 읽은 실제 요청이 없습니다. 예시를 대신 보여주지 않습니다.</p>
             <p className="muted small">접속이 없었거나, nginx가 다른 파일에 로그를 쓰거나, 로그 형식이 달라 읽지 못했을 수 있습니다. ● 실시간을 켜 두면 새 요청이 들어오는 대로 보여줍니다.</p>
@@ -155,13 +162,13 @@ const EMPTY_TEXT: Record<FlowSource, string> = {
 // 실시간 모드에서는 단계 목록이 길어지므로 최근 것만 보여준다.
 const LIVE_LIST = 8
 
-export function FlowPanel({ player, source }: { player: FlowPlayer; source: FlowSource }) {
+export function FlowPanel({ player, source, emptyText }: { player: FlowPlayer; source: FlowSource; emptyText?: string }) {
   const { script, timeline, frame, status } = player
   if (!script || !timeline || !frame) {
     return (
       <aside className="detail flow-panel" aria-label="통신 재생 설명">
         <h2 className="panel-title">통신 재생</h2>
-        <p className="muted empty">{EMPTY_TEXT[source]}</p>
+        <p className="muted empty">{emptyText ?? EMPTY_TEXT[source]}</p>
       </aside>
     )
   }

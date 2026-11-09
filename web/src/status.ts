@@ -1,4 +1,5 @@
 import type { HostService, Service, Status } from './api'
+import { parseTarget } from './context'
 
 export const STATUS_LABEL: Record<Status, string> = {
   ok: '정상',
@@ -59,6 +60,16 @@ export function hostServiceKey(service: HostService): string {
 
 export function hostServiceName(service: HostService): string {
   return service.name || UNKNOWN_HOST_LABEL
+}
+
+// targetLabel은 선택 대상을 화면에 적을 이름으로 바꾼다. 서버 전체면 이름이 없다.
+export function targetLabel(target?: string): string | undefined {
+  const parsed = parseTarget(target)
+  if (!parsed || parsed.kind === 'host') return undefined
+  if (parsed.kind === 'service') return serviceLabel(parsed.key)
+  if (parsed.kind === 'network') return `네트워크 ${parsed.name}`
+  if (parsed.kind === 'hostService') return parsed.name === UNKNOWN_HOST_SERVICE ? UNKNOWN_HOST_LABEL : parsed.name
+  return `프로젝트 ${projectLabel(parsed.key)}`
 }
 
 export const HOST_EVIDENCE_TAG: Record<HostService['evidence'], string> = {
