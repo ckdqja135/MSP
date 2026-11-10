@@ -325,14 +325,37 @@ func (s *Server) handleGaps(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, gaps)
 }
 
+// 대상 조건은 화면이 구조에서 만든 값이다. 너무 많거나 주소, 포트가 아닌 값은 받지 않는다.
+const maxRequestConditions = 256
+
 func (s *Server) handleRequests(w http.ResponseWriter, r *http.Request) {
 	from, to, err := s.timeRange(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	requests, err := s.store.Requests(r.Context(), r.PathValue("id"), from, to, limit)
+	query := r.URL.Query()
+	filter := RequestFilter{From: from, To: to, Services: query["service"], UpstreamHosts: query["upstream_host"]}
+	filter.Limit, _ = strconv.Atoi(query.Get("limit"))
+	for _, host := range filter.UpstreamHosts {
+		if net.ParseIP(host) == nil {
+			http.Error(w, fmt.Sprintf("upstream_host %q는 IP 주소가 아닙니다", host), http.StatusBadRequest)
+			return
+		}
+	}
+	for _, text := range query["local_port"] {
+		port, err := strconv.Atoi(text)
+		if err != nil || port < 1 || port > 65535 {
+			http.Error(w, fmt.Sprintf("local_port %q는 포트 번호가 아닙니다", text), http.StatusBadRequest)
+			return
+		}
+		filter.LocalPorts = append(filter.LocalPorts, port)
+	}
+	if len(filter.Services)+len(filter.UpstreamHosts)+len(filter.LocalPorts) > maxRequestConditions {
+		http.Error(w, fmt.Sprintf("대상 조건은 %d개까지 받습니다", maxRequestConditions), http.StatusBadRequest)
+		return
+	}
+	requests, err := s.store.Requests(r.Context(), r.PathValue("id"), filter)
 	if err != nil {
 		writeError(w, err)
 		return

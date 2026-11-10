@@ -221,8 +221,22 @@ export interface RequestRow {
   upstream_ms: number | null
 }
 
-export function fetchRequests(server: string, from: string, to: string, limit: number) {
-  return get<RequestRow[]>(`/servers/${encodeURIComponent(server)}/requests`, new URLSearchParams({ from, to, limit: String(limit) }))
+// RequestFilter는 고른 대상에 닿은 요청만 중앙 서버에서 골라 받는 조건이다.
+// 요청을 받은 프록시 이름이나 전달 주소 중 하나가 맞으면 받는다.
+export interface RequestFilter {
+  services: string[]
+  // 전달 주소의 호스트다. 포트는 가리지 않는다.
+  hosts: string[]
+  // 서버 자신(루프백 주소)으로 전달한 포트다.
+  localPorts: number[]
+}
+
+export function fetchRequests(server: string, from: string, to: string, limit: number, filter?: RequestFilter) {
+  const params = new URLSearchParams({ from, to, limit: String(limit) })
+  for (const service of filter?.services ?? []) params.append('service', service)
+  for (const host of filter?.hosts ?? []) params.append('upstream_host', host)
+  for (const port of filter?.localPorts ?? []) params.append('local_port', String(port))
+  return get<RequestRow[]>(`/servers/${encodeURIComponent(server)}/requests`, params)
 }
 
 export interface SampleSeries {

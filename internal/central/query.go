@@ -372,18 +372,68 @@ const (
 	maxRequestLimit     = 1000
 )
 
-// Requests는 구간 안의 요청을 최근 순으로 돌려준다.
-func (s *Store) Requests(ctx context.Context, serverID string, from, to time.Time, limit int) ([]RequestRow, error) {
+// RequestFilter는 요청 조회 조건이다. 대상 조건이 있으면 요청을 받은 프록시나 전달 주소 중 하나가 맞는 요청만 고른다.
+// 화면이 구조와 맞춰 한 번 더 거르므로, 여기서는 빠뜨리지 않는 쪽으로 넉넉하게 고른다.
+type RequestFilter struct {
+	From, To time.Time
+	Limit    int
+	Services []string
+	// UpstreamHosts는 전달 주소의 호스트다. 포트는 가리지 않는다.
+	UpstreamHosts []string
+	// LocalPorts는 서버 자신(루프백 주소)으로 전달한 포트다.
+	LocalPorts []int
+}
+
+func (f RequestFilter) scoped() bool {
+	return len(f.Services)+len(f.UpstreamHosts)+len(f.LocalPorts) > 0
+}
+
+// requestQuery는 조건에 맞는 요청을 최근 순으로 읽는 쿼리를 만든다. 대상 조건이 있어도 시간 인덱스로 구간만 훑는다.
+func requestQuery(serverID string, f RequestFilter) (string, []any) {
+	limit := f.Limit
 	if limit <= 0 {
 		limit = defaultRequestLimit
 	}
 	if limit > maxRequestLimit {
 		limit = maxRequestLimit
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	query := strings.Builder{}
+	query.WriteString(`
 		SELECT id, at, service, method, path, proto, status, bytes, duration_ms, upstream, upstream_ms FROM requests
-		WHERE server_id = ? AND at >= ? AND at <= ? ORDER BY at DESC, id DESC LIMIT ?`,
-		serverID, from.UnixMilli(), to.UnixMilli(), limit)
+		WHERE server_id = ? AND at >= ? AND at <= ?`)
+	args := []any{serverID, f.From.UnixMilli(), f.To.UnixMilli()}
+	if f.scoped() {
+		var match []string
+		if len(f.Services) > 0 {
+			match = append(match, `service IN (`+placeholders(len(f.Services))+`)`)
+			for _, service := range f.Services {
+				args = append(args, service)
+			}
+		}
+		for _, host := range f.UpstreamHosts {
+			prefix := host + ":"
+			if strings.Contains(host, ":") {
+				prefix = "[" + host + "]:"
+			}
+			match = append(match, `substr(upstream, 1, ?) = ?`)
+			args = append(args, len(prefix), prefix)
+		}
+		for _, port := range f.LocalPorts {
+			suffix := ":" + itoa(port)
+			match = append(match, `upstream = ? OR upstream GLOB ?`)
+			args = append(args, "[::1]"+suffix, "127.*"+suffix)
+		}
+		query.WriteString(` AND (` + strings.Join(match, ` OR `) + `)`)
+	}
+	query.WriteString(` ORDER BY at DESC, id DESC LIMIT ?`)
+	args = append(args, limit)
+	return query.String(), args
+}
+
+// Requests는 구간 안의 요청을 최근 순으로 돌려준다.
+func (s *Store) Requests(ctx context.Context, serverID string, f RequestFilter) ([]RequestRow, error) {
+	query, args := requestQuery(serverID, f)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

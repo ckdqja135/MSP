@@ -1,4 +1,4 @@
-import type { HostService, Probe, RequestRow, Service, Topology } from './api'
+import type { HostService, Probe, RequestFilter, RequestRow, Service, Topology } from './api'
 import { parseTarget } from './context'
 import { isLoopbackAddress } from './format'
 import { serviceRole } from './scene'
@@ -101,11 +101,11 @@ function hostPublicPorts(service: HostService): number[] {
 }
 
 // 선언된 의존을 따라 가장 긴 경로를 찾는다. 선언은 실제 호출을 보장하지 않으므로 시뮬레이션에만 쓴다.
-function longestChain(start: Service, topology: Topology, services: Map<string, Service>, must?: string): Service[] {
+function longestChain(start: Service, topology: Topology, services: Map<string, Service>, must: string[] = []): Service[] {
   const edges = topology.relations.filter((relation) => relation.type === 'declared_depends_on')
   let best: Service[] = [start]
   const better = (path: Service[]) => {
-    const hasMust = (list: Service[]) => (must ? list.some((item) => item.key === must) : false)
+    const hasMust = (list: Service[]) => list.some((item) => must.includes(item.key))
     if (hasMust(path) !== hasMust(best)) return hasMust(path)
     return path.length > best.length
   }
@@ -137,7 +137,8 @@ interface Entry {
 function findEntry(topology: Topology, target?: string): Entry | undefined {
   const services = new Map(topology.projects.flatMap((project) => project.services).map((service) => [service.key, service]))
   const parsed = parseTarget(target)
-  const must = parsed?.kind === 'service' ? parsed.key : undefined
+  // 고른 대상의 서비스를 지나는 경로를 먼저 고른다. 프로젝트나 네트워크면 그 안의 서비스 하나만 지나도 된다.
+  const must = parsed?.kind === 'hostService' ? [] : (targetServices(target, topology) ?? [])
   const mustHost = parsed?.kind === 'hostService' ? parsed.name : undefined
   const entries: Entry[] = []
   for (const service of services.values()) {
@@ -151,7 +152,7 @@ function findEntry(topology: Topology, target?: string): Entry | undefined {
     entries.push({ id: `hostsvc:${hostServiceKey(service)}`, name: hostServiceName(service), port, chain: [], host: true })
   }
   const score = (entry: Entry) => [
-    (must && entry.chain.some((item) => item.key === must)) || (mustHost && entry.id === `hostsvc:${mustHost}`) ? 0 : 1,
+    entry.chain.some((item) => must.includes(item.key)) || (mustHost && entry.id === `hostsvc:${mustHost}`) ? 0 : 1,
     -entry.chain.length,
     entry.port === 443 || entry.port === 80 ? 0 : 1,
   ]
@@ -160,7 +161,7 @@ function findEntry(topology: Topology, target?: string): Entry | undefined {
     for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i]
     return a.id.localeCompare(b.id)
   })[0]
-  const chosen = must ? services.get(must) : undefined
+  const chosen = parsed?.kind === 'service' ? services.get(parsed.key) : undefined
   if (best && chosen && chosen.runtime !== 'stopped' && !best.chain.includes(chosen)) {
     return { ...best, chain: longestChain(chosen, topology, services), assumed: chosen }
   }
@@ -234,6 +235,9 @@ export function simulationScript(topology: Topology, target?: string): FlowScrip
   const count = steps.reduce((total, step) => total + step.packets.length, 0)
   // 시뮬레이션은 정상 흐름만 그리므로 지금 문제가 있는 서비스를 함께 알린다.
   const troubled = tail.filter((service) => service.status === 'critical').map((service) => service.name)
+  // 고른 대상에 이르는 경로가 없으면 대상과 관계없는 예시라고 밝힌다.
+  const devices = targetDevices(target, topology)
+  const missed = devices && !inner.some((item) => devices.includes(item.id)) ? targetLabel(target) : undefined
   return {
     source: 'simulation',
     title: `${entry.name}로 들어오는 요청`,
@@ -244,6 +248,7 @@ export function simulationScript(topology: Topology, target?: string): FlowScrip
       ['경로', inner.map((item) => item.short).join(' → ')],
       ['패킷', `${count}개 (예시)`],
       ...(troubled.length > 0 ? ([['현재 장애', `${troubled.join(', ')}. 예시는 정상 흐름만 그립니다`]] as [string, string][]) : []),
+      ...(missed ? ([['대상', `${missed}에 이르는 경로가 구성에 없습니다. 고른 대상과 관계없는 입구의 예시입니다`]] as [string, string][]) : []),
     ],
   }
 }
@@ -285,11 +290,13 @@ function probeStep(service: Service, probes: Probe[]): FlowStep {
 }
 
 // observedScript는 실제로 보낸 응답 확인 요청의 마지막 결과를 재생한다. 사용자 요청은 수집하지 않는다.
+// 대상을 골랐으면 그 대상에 든 서비스만 재생한다. 서버 전체 기록으로 대신 채우지 않는다.
 export function observedScript(topology: Topology, target?: string, demo = false): FlowScript | undefined {
-  const parsed = parseTarget(target)
+  const keys = targetServices(target, topology)
+  const label = targetLabel(target)
   const services = topology.projects
     .flatMap((project) => project.services)
-    .filter((service) => service.probes.length > 0 && (parsed?.kind !== 'service' || service.key === parsed.key))
+    .filter((service) => service.probes.length > 0 && (!keys || keys.includes(service.key)))
     .sort((a, b) => Math.min(...a.probes.map((probe) => Date.parse(probe.last_checked))) - Math.min(...b.probes.map((probe) => Date.parse(probe.last_checked))))
   if (services.length === 0) return undefined
   const steps = services.map((service) => probeStep(service, service.probes))
@@ -297,7 +304,7 @@ export function observedScript(topology: Topology, target?: string, demo = false
   const failed = probes.filter((probe) => probe.state !== 'ok').length
   return {
     source: 'observed',
-    title: '응답 확인 기록',
+    title: label ? `${label} 응답 확인 기록` : '응답 확인 기록',
     note: demo
       ? '데모용 가짜 기록입니다. 실제 서버에 연결하면 실제로 보낸 응답 확인 요청의 결과가 나옵니다.'
       : '실제로 보낸 응답 확인 요청의 마지막 결과입니다. 사용자의 요청은 수집하지 않아 여기에 나오지 않습니다.',
@@ -384,22 +391,59 @@ export function requestStep(request: RequestRow, topology: Topology): FlowStep {
   }
 }
 
+// targetDevices는 고른 대상을 구조맵 장비로 바꾼다. 서버 전체를 고르면 없다.
+function targetDevices(target: string | undefined, topology: Topology): string[] | undefined {
+  const parsed = parseTarget(target)
+  if (!parsed || parsed.kind === 'host') return undefined
+  if (parsed.kind === 'hostService') return [`hostsvc:${parsed.name}`]
+  return (targetServices(target, topology) ?? []).map((key) => `svc:${key}`)
+}
+
 // RequestScope는 통신 재생을 고른 대상으로 좁힌다. 서버 전체를 고르면 만들지 않는다.
 export interface RequestScope {
   name: string
   devices: string[]
-  // 공개 포트가 있으면 프록시를 거치지 않고 직접 들어오는 접속이 있을 수 있다.
+  // 프록시가 아닌 장비에 공개 포트가 있으면 프록시를 거치지 않고 직접 들어오는 접속이 있을 수 있다.
   published: boolean
 }
 
-export function requestScope(target: string | undefined, topology: Topology): RequestScope | undefined {
-  const parsed = parseTarget(target)
+// requestScope는 조회한 요청으로 어느 장비가 요청을 받는 프록시인지 본다.
+// 프록시는 접근 로그를 쓰는 쪽이라 직접 들어온 접속도 남는다. 요청이 하나도 없으면 프록시를 몰라 직접 접속 안내를 붙이지 않는다.
+export function requestScope(target: string | undefined, topology: Topology, requests: RequestRow[] = []): RequestScope | undefined {
   const name = targetLabel(target)
-  if (!parsed || !name) return undefined
-  if (parsed.kind === 'hostService') return { name, devices: [`hostsvc:${parsed.name}`], published: false }
-  const keys = targetServices(target, topology) ?? []
-  const services = topology.projects.flatMap((project) => project.services).filter((service) => keys.includes(service.key))
-  return { name, devices: keys.map((key) => `svc:${key}`), published: services.some((service) => publicPorts(service).length > 0) }
+  const devices = targetDevices(target, topology)
+  if (!name || !devices) return undefined
+  const exposed = [
+    ...topology.projects.flatMap((project) => project.services).filter((service) => publicPorts(service).length > 0).map((service) => `svc:${service.key}`),
+    ...(topology.host_services ?? []).filter((service) => hostPublicPorts(service).length > 0).map((service) => `hostsvc:${hostServiceKey(service)}`),
+  ].filter((id) => devices.includes(id))
+  const entries = new Set(requests.map((request) => entryDevice(request.service, topology)))
+  return { name, devices, published: entries.size > 0 && exposed.some((id) => !entries.has(id)) }
+}
+
+// requestFilter는 고른 대상에 닿을 수 있는 요청 조건을 구조에서 만든다. 중앙 서버가 이 조건으로 구간 전체에서 골라 준다.
+// 루프백 포트는 바인딩을 가리지 않고 넉넉하게 넣는다. 받은 뒤 inScope로 한 번 더 거른다.
+export function requestFilter(target: string | undefined, topology: Topology): RequestFilter | undefined {
+  const devices = targetDevices(target, topology)
+  if (!devices) return undefined
+  const hosts = new Set<string>()
+  const localPorts = new Set<number>()
+  for (const service of topology.projects.flatMap((project) => project.services)) {
+    if (!devices.includes(`svc:${service.key}`)) continue
+    for (const container of service.containers) {
+      for (const network of container.networks ?? []) if (network.ip) hosts.add(network.ip)
+      for (const port of container.ports ?? []) if (port.host_port) localPorts.add(port.host_port)
+    }
+  }
+  for (const service of topology.host_services ?? []) {
+    if (!devices.includes(`hostsvc:${hostServiceKey(service)}`) || !service.listening) continue
+    for (const port of service.ports) localPorts.add(port.port)
+  }
+  return {
+    services: devices.map((id) => id.replace(/^(svc|hostsvc):/, '')),
+    hosts: [...hosts].sort(),
+    localPorts: [...localPorts].sort((a, b) => a - b),
+  }
 }
 
 // inScope는 요청이 고른 대상에 닿았는지 본다. 요청을 받은 프록시나 전달 대상 중 하나가 대상이면 넣는다.
@@ -415,9 +459,9 @@ function scopeNote(scope: RequestScope): string {
 }
 
 // scopedEmptyText는 고른 대상에 닿은 요청이 없을 때의 안내다. 서버 전체 요청으로 대신 채우지 않는다.
-export function scopedEmptyText(scope: RequestScope, searched: number): string {
-  const head = searched > 0 ? `조회한 요청 ${searched}건 중 ${scope.name}에 닿은 요청이 없습니다.` : '이 구간에 접근 로그에서 읽은 요청이 없습니다.'
-  return [head, '서버 전체 요청을 대신 보여주지 않습니다.', ...(scope.published ? [DIRECT_NOTE] : [])].join(' ')
+// 구간에 요청이 하나도 없을 때는 쓰지 않는다. 그때는 대상이 아니라 로그 수집을 먼저 봐야 한다.
+export function scopedEmptyText(scope: RequestScope): string {
+  return [`이 구간에 ${scope.name}에 닿은 요청이 없습니다.`, '서버 전체 요청을 대신 보여주지 않습니다.', ...(scope.published ? [DIRECT_NOTE] : [])].join(' ')
 }
 
 // requestScript는 접근 로그에서 읽은 최근 요청을 재생한다. 요청 사이의 간격은 실제 시간이 아니다.
@@ -440,8 +484,9 @@ export function requestScript(requests: RequestRow[], topology: Topology, demo =
     note,
     steps: recent.map((request) => requestStep(request, topology)),
     facts: [
-      ...(scope ? ([['대상', `${scope.name} · 조회한 ${requests.length}건 중 ${rows.length}건`]] as [string, string][]) : []),
-      ['조회한 요청', `${rows.length}건 (5xx ${failed}건)`],
+      ...(scope
+        ? ([['대상', scope.name], ['대상 요청', `${rows.length}건 (5xx ${failed}건)`]] as [string, string][])
+        : ([['조회한 요청', `${rows.length}건 (5xx ${failed}건)`]] as [string, string][])),
       ['전달 대상', forwardSummary(rows.length, forwarded, topology)],
       ['재생', `최근 ${recent.length}건`],
       ['간격', '실제 시간과 다릅니다'],

@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -702,7 +703,7 @@ func TestRequestsAreStoredAndRead(t *testing.T) {
 	if ack, err := store.Ingest(ctx, batch, baseTime); err != nil || !ack.Duplicate {
 		t.Fatalf("재전송 처리 = %+v, %v", ack, err)
 	}
-	rows, err := store.Requests(ctx, "home-1", baseTime.Add(-time.Minute), baseTime.Add(time.Minute), 0)
+	rows, err := store.Requests(ctx, "home-1", RequestFilter{From: baseTime.Add(-time.Minute), To: baseTime.Add(time.Minute)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -715,13 +716,99 @@ func TestRequestsAreStoredAndRead(t *testing.T) {
 	if rows[1].Bytes == nil || *rows[1].Bytes != 120 || rows[1].DurationMS == nil || *rows[1].DurationMS != 0 {
 		t.Errorf("0을 측정값으로 남기지 못했다: %+v", rows[1])
 	}
-	limited, err := store.Requests(ctx, "home-1", baseTime.Add(-time.Minute), baseTime.Add(time.Minute), 1)
+	limited, err := store.Requests(ctx, "home-1", RequestFilter{From: baseTime.Add(-time.Minute), To: baseTime.Add(time.Minute), Limit: 1})
 	if err != nil || len(limited) != 1 {
 		t.Errorf("limit = %d, %v", len(limited), err)
 	}
-	empty, err := store.Requests(ctx, "home-1", baseTime.Add(time.Hour), baseTime.Add(2*time.Hour), 0)
+	empty, err := store.Requests(ctx, "home-1", RequestFilter{From: baseTime.Add(time.Hour), To: baseTime.Add(2 * time.Hour)})
 	if err != nil || empty == nil || len(empty) != 0 {
 		t.Errorf("빈 구간은 빈 목록이어야 한다: %v, %v", empty, err)
+	}
+}
+
+// 대상을 고르면 그 대상에 닿은 요청만 세어 limit을 채운다. 다른 요청이 많아도 드문 대상 요청을 놓치지 않는다.
+func TestRequestsFilterByTarget(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ctx := context.Background()
+	batch := liveBatch(1, baseTime)
+	add := func(offset int, service, upstream string) {
+		batch.Requests = append(batch.Requests, protocol.Request{At: baseTime.Add(time.Duration(offset) * time.Second), Service: service, Method: "GET", Path: "/" + upstream, Status: 200, Upstream: upstream})
+	}
+	add(1, "nginx", "172.20.0.3:8080")
+	add(2, "nginx", "127.0.0.1:3005")
+	add(3, "nginx", "[::1]:3005")
+	add(4, "nginx", "127.0.1.1:3005")
+	add(5, "edge", "")
+	// 대상과 겹치지 않아야 하는 주소다. 앞부분이나 포트 끝자리만 같다.
+	add(6, "nginx", "172.20.0.30:8080")
+	add(7, "nginx", "127.0.0.1:13005")
+	add(8, "nginx", "10.0.0.5:3005")
+	for i := 0; i < 20; i++ {
+		add(10+i, "nginx", "172.20.0.9:80")
+	}
+	if _, err := store.Ingest(ctx, batch, baseTime); err != nil {
+		t.Fatal(err)
+	}
+	paths := func(f RequestFilter) []string {
+		t.Helper()
+		f.From, f.To = baseTime, baseTime.Add(time.Minute)
+		rows, err := store.Requests(ctx, "home-1", f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var out []string
+		for _, row := range rows {
+			out = append(out, strings.TrimPrefix(row.Path, "/"))
+		}
+		return out
+	}
+	if got := paths(RequestFilter{UpstreamHosts: []string{"172.20.0.3"}, Limit: 5}); !slices.Equal(got, []string{"172.20.0.3:8080"}) {
+		t.Errorf("호스트 조건 = %v", got)
+	}
+	if got := paths(RequestFilter{LocalPorts: []int{3005}}); !slices.Equal(got, []string{"127.0.1.1:3005", "[::1]:3005", "127.0.0.1:3005"}) {
+		t.Errorf("루프백 포트 조건 = %v", got)
+	}
+	if got := paths(RequestFilter{Services: []string{"edge"}, UpstreamHosts: []string{"172.20.0.3"}}); len(got) != 2 {
+		t.Errorf("프록시나 전달 주소 중 하나만 맞아도 넣어야 한다: %v", got)
+	}
+	if got := paths(RequestFilter{UpstreamHosts: []string{"fd00::3"}}); len(got) != 0 {
+		t.Errorf("없는 주소에 맞는 요청이 있다: %v", got)
+	}
+	if got := paths(RequestFilter{Limit: 5}); len(got) != 5 || got[0] != "172.20.0.9:80" {
+		t.Errorf("대상 조건이 없으면 구간 전체에서 최근 순이어야 한다: %v", got)
+	}
+}
+
+// 대상 조건을 붙여도 시간 인덱스로 구간만 훑는다. 조건 때문에 표 전체를 훑으면 서버에 부하가 된다.
+func TestRequestFilterUsesTimeIndex(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	query, args := requestQuery("home-1", RequestFilter{From: baseTime, To: baseTime.Add(time.Hour), Services: []string{"nginx"}, UpstreamHosts: []string{"172.20.0.3", "fd00::3"}, LocalPorts: []int{3005}})
+	plan := queryPlan(t, store, query, args...)
+	if !strings.Contains(plan, "requests_time") || strings.Contains(plan, "SCAN requests") {
+		t.Errorf("대상 조건 쿼리가 시간 인덱스를 쓰지 않는다:\n%s", plan)
+	}
+}
+
+func TestRequestFilterRejectsBadConditions(t *testing.T) {
+	store := openStore(t, protocol.ModeLive)
+	ts := newTestServer(t, store, "")
+	for _, query := range []string{"upstream_host=not-an-ip", "local_port=0", "local_port=70000", "local_port=abc", "service=" + strings.Repeat("&service=x", maxRequestConditions)} {
+		resp, err := http.Get(ts.URL + "/api/v1/servers/home-1/requests?" + query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%.40s: %d", query, resp.StatusCode)
+		}
+	}
+	resp, err := http.Get(ts.URL + "/api/v1/servers/home-1/requests?service=nginx&upstream_host=172.20.0.3&upstream_host=fd00::3&local_port=3005")
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("올바른 조건을 거절했다: %d", resp.StatusCode)
 	}
 }
 
@@ -739,7 +826,7 @@ func TestPurgeRemovesExpiredRequests(t *testing.T) {
 	if err := store.Purge(ctx, baseTime); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := store.Requests(ctx, "home-1", baseTime.Add(-30*24*time.Hour), baseTime, 0)
+	rows, err := store.Requests(ctx, "home-1", RequestFilter{From: baseTime.Add(-30 * 24 * time.Hour), To: baseTime})
 	if err != nil || len(rows) != 1 || rows[0].Path != "/new" {
 		t.Errorf("정리 결과 = %+v, %v", rows, err)
 	}

@@ -8,14 +8,15 @@ import { DetailPanel } from './components/DetailPanel'
 import { FlowPanel, PLAY_LABEL } from './components/FlowPlayback'
 import { TopologyMap, type MapHighlight } from './components/TopologyMap'
 import { timeMode, timeWindow, updateContext, useConsoleContext } from './context'
-import { appendLiveSteps, liveRequestScript, observedScript, requestScope, requestScript, scopedEmptyText, simulationScript, type FlowSource, type FlowStep } from './flow'
+import { appendLiveSteps, liveRequestScript, observedScript, requestFilter, requestScope, requestScript, scopedEmptyText, simulationScript, type FlowSource, type FlowStep } from './flow'
 import { formatDateTime } from './format'
+import { targetLabel } from './status'
 import { useFlowPlayer } from './useFlowPlayer'
 import { useFlowRecords } from './useFlowRecords'
 
 const REFRESH_INTERVAL_MS = 3000
 const REQUEST_LIMIT = 100
-// 대상을 고르면 그 대상에 닿은 요청만 골라내므로 더 넓게 조회한다.
+// 고른 대상에 닿은 요청은 중앙 서버가 골라 주므로 더 많이 받아도 된다.
 const SCOPED_REQUEST_LIMIT = 500
 const NO_REQUESTS: RequestRow[] = []
 
@@ -97,23 +98,42 @@ export function App() {
   // 데이터가 있으면 API 요청을 먼저 보여주고, 응답 확인, 시뮬레이션 순서로 내려간다.
   const flowTab = context.tab === 'play'
   const demo = meta.data?.mode === 'demo'
-  // 고른 대상이 있으면 통신 재생도 그 대상에 닿은 요청만 보여준다. 고른 것이 없으면 서버 전체다.
-  const scope = useMemo(() => (topology.data ? requestScope(context.target, topology.data) : undefined), [context.target, topology.data])
-  const requestLimit = scope ? SCOPED_REQUEST_LIMIT : REQUEST_LIMIT
+  const timeKey = live ? context.range : [context.from, context.to, context.frozen, context.range]
   const requests = useQuery({
-    queryKey: [live ? 'live' : 'fixed', 'requests', server?.id, requestLimit, live ? context.range : [context.from, context.to, context.frozen, context.range]],
+    queryKey: [live ? 'live' : 'fixed', 'requests', server?.id, timeKey],
     queryFn: () => {
       const { from, to } = timeWindow(context, Date.now())
-      return fetchRequests(server!.id, from, to, requestLimit)
+      return fetchRequests(server!.id, from, to, REQUEST_LIMIT)
     },
     enabled: Boolean(server),
     placeholderData: (previous) => previous,
   })
   const requestRows = requests.data ?? NO_REQUESTS
-  const requested = useMemo(() => (topology.data ? requestScript(requestRows, topology.data, demo, scope) : undefined), [requestRows, topology.data, demo, scope])
-  const requestEmpty = scope ? scopedEmptyText(scope, requestRows.length) : undefined
-  const observed = useMemo(() => (topology.data ? observedScript(topology.data, context.target, demo) : undefined), [topology.data, context.target, demo])
-  const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, context.target) : undefined), [topology.data, context.target])
+  // 고른 대상이 있으면 통신 재생도 그 대상에 닿은 요청만 보여준다. 고른 것이 없으면 서버 전체다.
+  // 대상에 닿은 요청은 중앙 서버가 구간 전체에서 골라 준다. 최근 요청 몇 건 안에서만 찾으면 바쁜 서버에서 드문 요청을 놓친다.
+  // 통신 재생 탭이 아니면 따로 조회하지 않고 최근 요청 안에서 고른다.
+  const scopeTarget = targetLabel(context.target) ? context.target : undefined
+  const filter = useMemo(() => (flowTab && topology.data ? requestFilter(scopeTarget, topology.data) : undefined), [flowTab, scopeTarget, topology.data])
+  const scopedRequests = useQuery({
+    queryKey: [live ? 'live' : 'fixed', 'scoped-requests', server?.id, filter, timeKey],
+    queryFn: () => {
+      const { from, to } = timeWindow(context, Date.now())
+      return fetchRequests(server!.id, from, to, SCOPED_REQUEST_LIMIT, filter)
+    },
+    enabled: Boolean(server && filter && filter.services.length > 0),
+  })
+  const playQuery = filter ? scopedRequests : requests
+  const playRows = filter ? (scopedRequests.data ?? NO_REQUESTS) : requestRows
+  const scope = useMemo(() => (topology.data ? requestScope(scopeTarget, topology.data, [...requestRows, ...playRows]) : undefined), [scopeTarget, topology.data, requestRows, playRows])
+  const requested = useMemo(() => (topology.data ? requestScript(playRows, topology.data, demo, scope) : undefined), [playRows, topology.data, demo, scope])
+  // 새 조회가 끝나기 전에는 앞 조회의 목록이 남아 있으므로 요청이 없다고 말하지 않는다.
+  // 구간에 요청이 하나도 없으면 대상 문제가 아니므로 로그 수집을 안내하는 기본 문구를 쓴다.
+  let requestEmpty: string | undefined
+  if (playQuery.isLoading || playQuery.isPlaceholderData) requestEmpty = '요청을 불러오는 중입니다.'
+  else if (playQuery.isError) requestEmpty = '요청 기록을 불러오지 못했습니다.'
+  else if (scope && requestRows.length > 0) requestEmpty = scopedEmptyText(scope)
+  const observed = useMemo(() => (topology.data ? observedScript(topology.data, scopeTarget, demo) : undefined), [topology.data, scopeTarget, demo])
+  const simulation = useMemo(() => (topology.data ? simulationScript(topology.data, scopeTarget) : undefined), [topology.data, scopeTarget])
   const [sourceChoice, setSourceChoice] = useState<FlowSource | undefined>()
   const scripts = { requests: requested, observed, simulation }
   // 시뮬레이션은 직접 골랐을 때만 보여준다. 실제 데이터가 없을 때 예시로 대신하면 실제처럼 보이기 때문이다.
@@ -131,32 +151,41 @@ export function App() {
   // 실시간 모드는 켠 뒤에 들어온 요청만 차례로 보여준다.
   const liveSteps = useRef<FlowStep[]>([])
   const liveLastID = useRef(0)
+  // 지금까지 받은 가장 큰 요청 번호다. 대상을 바꿔 캐시에 남은 예전 목록이 잠깐 보여도 실시간 시작점이 뒤로 가지 않게 한다.
+  // 요청 번호는 서버 전체에서 커지므로 서버 전체 목록과 대상 목록 중 큰 쪽을 쓴다.
+  const seenID = useRef(0)
+  const newestID = [...requestRows, ...playRows].reduce((max, row) => Math.max(max, row.id), 0)
+  useEffect(() => {
+    seenID.current = Math.max(seenID.current, newestID)
+  }, [newestID])
   const setLiveFlow = (on: boolean) => {
     if (!on) {
       player.reset()
       return
     }
     liveSteps.current = []
-    liveLastID.current = requestRows.reduce((max, row) => Math.max(max, row.id), 0)
+    liveLastID.current = Math.max(seenID.current, newestID)
     player.startLive(liveRequestScript([], demo, scope))
   }
   useEffect(() => {
     if (!player.live || !topology.data) return
-    const next = appendLiveSteps(liveSteps.current, requestRows, topology.data, liveLastID.current, scope)
+    const next = appendLiveSteps(liveSteps.current, playRows, topology.data, liveLastID.current, scope)
     liveLastID.current = next.lastID
     if (next.steps === liveSteps.current) return
     liveSteps.current = next.steps
     player.extendLive(liveRequestScript(next.steps, demo, scope), next.dropped)
     // 요청 목록이 바뀔 때만 덧붙인다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [requestRows, player.live])
+  }, [playRows, player.live])
   // 대상을 바꾸면 재생을 처음으로 돌린다. 실시간이면 켠 채로 새 대상의 요청부터 다시 모은다.
+  // 같은 변경으로 재생할 내용이 API 요청에서 바뀌었으면 실시간을 다시 켜지 않는다.
+  // 서버 전체를 고르는 것은 고른 것이 없는 것과 같아 다시 시작하지 않는다.
   useEffect(() => {
-    if (player.live) setLiveFlow(true)
+    if (player.live && source === 'requests') setLiveFlow(true)
     else resetPlayer()
     // 대상이 바뀔 때만 다시 시작한다.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [context.target])
+  }, [scopeTarget])
   useEffect(() => {
     if (!live) resetPlayer()
   }, [live, resetPlayer])

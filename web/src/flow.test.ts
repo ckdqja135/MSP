@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Container, HostService, Probe, Project, Relation, RequestRow, Service, Topology } from './api'
-import { appendLiveSteps, buildTimeline, entryDevice, LIVE_MAX_STEPS, liveRequestScript, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestScope, requestScript, scopedEmptyText, simulationScript, upstreamDevice } from './flow'
+import { appendLiveSteps, buildTimeline, entryDevice, LIVE_MAX_STEPS, liveRequestScript, frameAt, hopProgress, nextArrival, observedScript, overviewFrame, previousStepStart, requestFilter, requestScope, requestScript, scopedEmptyText, simulationScript, upstreamDevice } from './flow'
 
 const container = (overrides: Partial<Container> = {}): Container =>
   ({ id: 'c', name: 'c', image: 'app:1', state: 'running', exit_code: 0, health: 'none', restart_count: 0, created_at: '', started_at: '', replica: 1, project: '', service: '', metrics: {}, ...overrides }) as Container
@@ -53,6 +53,34 @@ describe('시뮬레이션 대본', () => {
       [depends('blog/web', 'blog/api'), depends('blog/api', 'blog/db'), depends('blog/admin', 'blog/db')],
     )
     expect(simulationScript(data, 'svc:blog/admin')!.steps[0].packets[0].path).toContain('svc:blog/admin')
+  })
+
+  it('프로젝트를 고르면 그 안의 서비스를 지나는 경로를 먼저 고른다', () => {
+    const data = {
+      ...topology([]),
+      projects: [
+        { key: 'blog', status: 'ok', services: [service('blog/web', {}, published(443))] },
+        { key: 'shop', status: 'ok', services: [service('shop/app', {}, published(8080))] },
+      ],
+    } as unknown as Topology
+    const script = simulationScript(data, 'project:shop')!
+    expect(script.steps[0].packets[0].path).toContain('svc:shop/app')
+    expect(script.facts.find(([label]) => label === '대상')).toBeUndefined()
+  })
+
+  it('고른 대상에 이르는 경로가 없으면 관계없는 예시라고 밝힌다', () => {
+    // 서비스를 고르면 입구에서 그 서비스로 간다고 가정하고 그리므로 따로 밝히지 않는다.
+    const data = topology([service('blog/web', {}, published(443)), service('blog/db')])
+    expect(simulationScript(data, 'svc:blog/db')!.facts.find(([label]) => label === '대상')).toBeUndefined()
+    const isolated = {
+      ...topology([]),
+      projects: [
+        { key: 'blog', status: 'ok', services: [service('blog/web', {}, published(443))] },
+        { key: 'shop', status: 'ok', services: [service('shop/db')] },
+      ],
+    } as unknown as Topology
+    const missed = simulationScript(isolated, 'project:shop')!.facts.find(([label]) => label === '대상')
+    expect(missed?.[1]).toContain('관계없는')
   })
 
   it('멈춘 서비스로 이어 그리지 않는다', () => {
@@ -138,6 +166,22 @@ describe('응답 확인 기록', () => {
   it('고른 서비스만 재생한다', () => {
     const data = topology([service('blog/api', { probes: [probe()] }), service('blog/web', { probes: [probe()] })])
     expect(observedScript(data, 'svc:blog/web')!.steps.map((step) => step.id)).toEqual(['blog/web'])
+  })
+
+  it('프로젝트나 네트워크를 고르면 그 안의 서비스만 재생하고 서버 전체로 채우지 않는다', () => {
+    const data = {
+      ...topology([]),
+      projects: [
+        { key: 'blog', status: 'ok', services: [service('blog/api', { probes: [probe()] })] },
+        { key: 'shop', status: 'ok', services: [service('shop/app', { probes: [probe()] })] },
+      ],
+      networks: [{ name: 'shop_default', members: ['shop/app'] }],
+    } as unknown as Topology
+    const script = observedScript(data, 'project:blog')!
+    expect(script.steps.map((step) => step.id)).toEqual(['blog/api'])
+    expect(script.title).toBe('프로젝트 blog 응답 확인 기록')
+    expect(observedScript(data, 'net:shop_default')!.steps.map((step) => step.id)).toEqual(['shop/app'])
+    expect(observedScript(data, 'hostsvc:nginx')).toBeUndefined()
   })
 })
 
@@ -333,7 +377,10 @@ describe('고른 대상의 요청', () => {
     const script = requestScript(rows, data, false, requestScope('svc:blog/api', data))!
     expect(script.steps.map((step) => step.id)).toEqual(['1', '3'])
     expect(script.title).toContain('blog/api')
-    expect(Object.fromEntries(script.facts)['대상']).toBe('blog/api · 조회한 4건 중 2건')
+    const facts = Object.fromEntries(script.facts)
+    expect(facts['대상']).toBe('blog/api')
+    expect(facts['대상 요청']).toBe('2건 (5xx 0건)')
+    expect(facts['조회한 요청']).toBeUndefined()
     expect(script.note).toContain('blog/api에 닿은 요청만')
   })
 
@@ -346,13 +393,49 @@ describe('고른 대상의 요청', () => {
   })
 
   it('대상에 닿은 요청이 없으면 전체로 대신 채우지 않고 직접 접속은 기록되지 않는다고 밝힌다', () => {
-    const scope = requestScope('svc:blog/dev', data)!
-    expect(requestScript([request(1, '172.20.0.3:8080')], data, false, scope)).toBeUndefined()
+    const searched = [request(1, '172.20.0.3:8080')]
+    const scope = requestScope('svc:blog/dev', data, searched)!
+    expect(requestScript(searched, data, false, scope)).toBeUndefined()
     expect(scope.published).toBe(true)
-    const text = scopedEmptyText(scope, 1)
-    expect(text).toContain('조회한 요청 1건 중')
+    const text = scopedEmptyText(scope)
+    expect(text).toContain('blog/dev에 닿은 요청이 없습니다')
     expect(text).toContain('직접 들어온 접속')
-    expect(scopedEmptyText(requestScope('svc:blog/api', data)!, 0)).not.toContain('직접 들어온 접속')
+    expect(scopedEmptyText(requestScope('svc:blog/api', data, searched)!)).not.toContain('직접 들어온 접속')
+  })
+
+  it('요청을 받는 프록시는 공개 포트가 있어도 직접 접속 안내를 붙이지 않는다', () => {
+    const proxy = service('blog/proxy', {}, published(443))
+    const withProxy = topology([proxy, dev], [], [])
+    const viaProxy = { ...request(1, '127.0.0.1:3005'), service: 'blog/proxy' }
+    expect(requestScope('svc:blog/proxy', withProxy, [viaProxy])!.published).toBe(false)
+    expect(requestScope('project:blog', withProxy, [viaProxy])!.published).toBe(true)
+    expect(requestScope('hostsvc:nginx', data, rows)!.published).toBe(false)
+  })
+
+  it('프록시가 아닌 호스트 서비스에 공개 포트가 있으면 직접 접속 안내를 붙인다', () => {
+    const node: HostService = { name: 'node', evidence: 'socket-owner', listening: true, ports: [{ ip: '0.0.0.0', port: 3000 }] } as HostService
+    const withNode = topology([api], [], [nginx, node])
+    expect(requestScope('hostsvc:node', withNode, rows)!.published).toBe(true)
+  })
+
+  it('중앙 서버에 넘길 조건은 대상의 프록시 이름, 컨테이너 주소, 루프백 포트다', () => {
+    expect(requestFilter(undefined, data)).toBeUndefined()
+    expect(requestFilter('host', data)).toBeUndefined()
+    expect(requestFilter('svc:blog/api', data)).toEqual({ services: ['blog/api'], hosts: ['172.20.0.3'], localPorts: [] })
+    expect(requestFilter('project:blog', data)).toEqual({ services: ['blog/api', 'blog/dev'], hosts: ['172.20.0.3'], localPorts: [3005] })
+    expect(requestFilter('hostsvc:nginx', data)).toEqual({ services: ['nginx'], hosts: [], localPorts: [80, 443] })
+  })
+
+  it('중앙 서버가 고른 요청을 화면에서 한 번 더 걸러 대상과 맞춘다', () => {
+    // 루프백 포트 조건은 바인딩을 가리지 않아 다른 주소에만 묶인 포트로 간 요청도 올 수 있다.
+    const lan = service('blog/dev', {}, [container({ ports: [{ host_ip: '192.168.0.10', host_port: 3005, container_port: 3005, proto: 'tcp' }] })])
+    const lanOnly = topology([api, lan], [], [nginx])
+    expect(requestFilter('svc:blog/dev', lanOnly)!.localPorts).toEqual([3005])
+    expect(requestScript([request(2, '127.0.0.1:3005')], lanOnly, false, requestScope('svc:blog/dev', lanOnly))).toBeUndefined()
+  })
+
+  it('조회한 요청이 없으면 어느 쪽이 프록시인지 몰라 직접 접속을 단정하지 않는다', () => {
+    expect(requestScope('svc:blog/dev', data, [])!.published).toBe(false)
   })
 
   it('실시간에서는 대상에 닿은 요청만 덧붙이고 건너뛴 요청도 다시 보지 않는다', () => {
