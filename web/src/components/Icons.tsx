@@ -55,6 +55,15 @@ export function UnsupportedIcon() {
   )
 }
 
+export function MonitorIcon({ size = 14 }: { size?: number }) {
+  return (
+    <svg viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
+      <rect x="1.5" y="2.5" width="13" height="8.5" rx="1" fill="none" stroke="currentColor" strokeWidth="1.4" />
+      <path d="M8 11v2.5M5 13.500h6" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  )
+}
+
 export function IsoNetwork({ size = 16 }: { size?: number }) {
   return (
     <svg className="iso" viewBox="0 0 20 20" width={size} height={size} aria-hidden="true">

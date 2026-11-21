@@ -111,6 +111,7 @@ CREATE TABLE IF NOT EXISTS requests (
   upstream_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS requests_time ON requests (server_id, at);
+CREATE TABLE IF NOT EXISTS screen_tokens (server_id TEXT PRIMARY KEY, token_hash TEXT NOT NULL);
 `
 
 const (
@@ -201,8 +202,27 @@ func (s *Store) Enroll(ctx context.Context, serverID, token string) error {
 
 // Authenticate는 서버의 토큰을 상수 시간으로 비교한다.
 func (s *Store) Authenticate(ctx context.Context, serverID, token string) bool {
+	return s.matchToken(ctx, `SELECT token_hash FROM servers WHERE id = ?`, serverID, token)
+}
+
+// EnrollScreen은 화면 도우미의 토큰을 등록한다. 에이전트 토큰과 따로 두어 화면 전송 외에는 쓸 수 없게 한다.
+func (s *Store) EnrollScreen(ctx context.Context, serverID, token string) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO screen_tokens (server_id, token_hash) VALUES (?, ?)
+		ON CONFLICT (server_id) DO UPDATE SET token_hash = excluded.token_hash`, serverID, hashToken(token))
+	return err
+}
+
+// AuthenticateScreen은 화면 도우미의 토큰을 확인한다.
+func (s *Store) AuthenticateScreen(ctx context.Context, serverID, token string) bool {
+	return s.matchToken(ctx, `SELECT token_hash FROM screen_tokens WHERE server_id = ?`, serverID, token)
+}
+
+func (s *Store) matchToken(ctx context.Context, query, serverID, token string) bool {
 	var stored string
-	err := s.db.QueryRowContext(ctx, `SELECT token_hash FROM servers WHERE id = ?`, serverID).Scan(&stored)
+	err := s.db.QueryRowContext(ctx, query, serverID).Scan(&stored)
 	if err != nil || stored == "" {
 		// 없는 서버도 같은 비교를 거쳐 응답 시간으로 존재 여부가 드러나지 않게 한다.
 		subtle.ConstantTimeCompare([]byte(hashToken(token)), []byte(hashToken("")))

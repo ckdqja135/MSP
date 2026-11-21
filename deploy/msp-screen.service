@@ -1,0 +1,20 @@
+# 사용자 서비스다. 데스크톱에 로그인한 사용자의 세션 안에서만 돈다. install.sh --screen-user로 지정한 사용자만 실행한다.
+[Unit]
+Description=MSP 화면 도우미 (화면 전송, 허용 시 원격 조작)
+PartOf=graphical-session.target
+After=graphical-session.target
+
+[Service]
+# 보는 사람이 있을 때만 화면을 읽는다. 입력은 /etc/msp/screen.json에서 조작을 허용했을 때만 받는다.
+ExecStart=/opt/msp/msp-screen --config /etc/msp/screen.json
+Restart=always
+RestartSec=10
+Environment=GOMEMLIMIT=192MiB
+Environment=GOMAXPROCS=1
+# 조작하는 동안에는 화면을 1초에 네 번 읽어 압축한다.
+CPUQuota=60%
+MemoryMax=384M
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=graphical-session.target

@@ -1,6 +1,6 @@
 // Package agent는 대상 서버에서 실행되어 상태를 수집하고 중앙 서버로 보낸다.
 //
-// 이 에이전트는 읽기만 한다. 컨테이너를 변경하는 코드가 없고, 받을 수 있는 작업은 로그 조회뿐이다.
+// 이 에이전트는 읽기만 한다. 컨테이너를 변경하는 코드가 없고, 받을 수 있는 작업은 로그 조회와 콘솔 화면 읽기뿐이다.
 package agent
 
 import (
@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/agent/accesslog"
+	"github.com/ckdqja135/MSP/internal/agent/console"
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
 	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/ckdqja135/MSP/internal/probe"
@@ -135,6 +136,8 @@ type Agent struct {
 	client *http.Client
 	probes *http.Client
 	now    func() time.Time
+	// console은 가상 터미널의 글자 화면을 읽는다. 시험에서 바꿔 끼운다.
+	console func(tty int) (console.Screen, error)
 
 	epoch     string
 	startedAt int64
@@ -188,6 +191,7 @@ func New(cfg Config, docker Docker, host HostReader) (*Agent, error) {
 		client:        &http.Client{Timeout: sendTimeout},
 		probes:        probe.NewClient(),
 		now:           now,
+		console:       func(tty int) (console.Screen, error) { return console.Read("/dev", "/sys", tty) },
 		epoch:         hex.EncodeToString(raw),
 		startedAt:     now().UnixNano(),
 		collectors:    map[string]protocol.CollectorStatus{},

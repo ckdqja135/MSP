@@ -6,8 +6,9 @@ After=network.target msp-central.service
 Slice=msp.slice
 User=msp-agent
 Group=msp-agent
-# docker는 소켓 읽기에, adm은 nginx 접근 로그 읽기에 필요하다. 클라이언트는 GET과 허용 경로 외의 요청을 보내지 않는다.
-SupplementaryGroups=docker adm
+# docker는 소켓 읽기에, adm은 nginx 접근 로그 읽기에, tty는 콘솔 글자 화면 읽기에 필요하다.
+# Docker 클라이언트는 GET과 허용 경로 외의 요청을 보내지 않는다.
+SupplementaryGroups=docker adm tty
 # adm 그룹은 시스템 로그 전체를 읽을 수 있으므로 /var/log에서 nginx 로그만 보이게 한다.
 TemporaryFileSystem=/var/log:ro
 BindReadOnlyPaths=-/var/log/nginx
@@ -27,7 +28,11 @@ CapabilityBoundingSet=
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateDevices=yes
+# 장치는 콘솔 글자 화면(vcs)만 읽기 전용으로 연다. 터미널 장치는 열 수 없어 입력을 보낼 수 없다.
+DevicePolicy=closed
+DeviceAllow=char-vcs r
+# tty 그룹은 다른 사용자의 터미널 창에 글자를 쓸 수 있다. 그 길을 막는다.
+InaccessiblePaths=-/dev/pts
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
 ProtectKernelLogs=yes

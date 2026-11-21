@@ -3,6 +3,7 @@ import { AlertsMenu } from './AlertsMenu'
 import { RANGES, timeMode, updateContext, type ConsoleContext } from '../context'
 import { formatAge, formatDateTime } from '../format'
 import { Logo, StatusIcon } from './Icons'
+import { ScreenButton } from './ScreenViewer'
 
 const RANGE_LABEL: Record<string, string> = { '15m': '최근 15분', '1h': '최근 1시간', '6h': '최근 6시간', '24h': '최근 24시간' }
 
@@ -81,6 +82,8 @@ export function TopBar({ meta, servers, server, topology, context, now, streamCo
       </div>
 
       <div className="spacer" />
+
+      <ScreenButton server={server} demo={meta?.mode === 'demo'} />
 
       <AlertsMenu demo={meta?.mode === 'demo'} />
 

@@ -24,6 +24,14 @@ fi
 [ -S /var/run/docker.sock ] && ok "Docker 소켓 있음" || bad "Docker 소켓이 없습니다"
 getent group docker >/dev/null 2>&1 && ok "docker 그룹 있음" || bad "docker 그룹이 없습니다"
 
+# 에이전트는 tty 그룹으로 콘솔 글자 화면을 읽는다. 그룹이 없으면 에이전트가 시작하지 못한다.
+getent group tty >/dev/null 2>&1 && ok "tty 그룹 있음" || bad "tty 그룹이 없습니다"
+if [ -e /dev/vcsa1 ]; then
+    ok "텍스트 콘솔 장치 있음 (소유 그룹 $(stat -c %G /dev/vcsa1 2>/dev/null))"
+else
+    note "텍스트 콘솔 장치가 없어 화면보기의 텍스트 콘솔은 표시되지 않습니다"
+fi
+
 if systemctl is-active --quiet msp-central.service 2>/dev/null; then
     note "msp-central이 이미 8787 포트에서 동작 중입니다. 업그레이드로 진행합니다"
 elif ss -ltn 2>/dev/null | awk '{print $4}' | grep -q ':8787$'; then

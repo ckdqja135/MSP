@@ -38,6 +38,7 @@ func enroll(args []string) error {
 	flags := flag.NewFlagSet("enroll", flag.ExitOnError)
 	dbPath := flags.String("db", "data/msp.db", "DB 파일 경로")
 	serverID := flags.String("server", "", "서버 ID")
+	screen := flags.Bool("screen", false, "에이전트 대신 화면 도우미의 토큰을 등록")
 	flags.Parse(args)
 	if *serverID == "" {
 		return errors.New("--server가 필요합니다")
@@ -53,7 +54,11 @@ func enroll(args []string) error {
 		return err
 	}
 	token := hex.EncodeToString(raw)
-	if err := store.Enroll(context.Background(), *serverID, token); err != nil {
+	register := store.Enroll
+	if *screen {
+		register = store.EnrollScreen
+	}
+	if err := register(context.Background(), *serverID, token); err != nil {
 		return err
 	}
 	fmt.Println(token)

@@ -271,3 +271,67 @@ export interface Alert {
 }
 
 export const fetchAlerts = () => get<Alert[]>('/alerts')
+
+// ScreenView는 서버 화면 도우미의 상태다. 화면 그림은 screenFrameURL로 따로 받는다.
+// 이 조회가 이어지는 동안만 도우미가 화면을 읽는다.
+export interface ScreenView {
+  helper: 'online' | 'offline'
+  session: string
+  state: '' | 'ready' | 'unsupported' | 'error'
+  detail: string
+  seq: number
+  captured_at: string | null
+  width: number
+  height: number
+  // control은 이 서버가 원격 조작을 허용하는지, control_live는 지금 입력이 서버로 전달되는지다.
+  control: boolean
+  control_live: boolean
+}
+
+// control이 '1'이면 조작을 켜 둔 것이고 '0'이면 방금 끈 것이다. 없으면 보기만 한다.
+export function fetchScreen(server: string, control?: '0' | '1') {
+  const params = new URLSearchParams()
+  if (control) params.set('control', control)
+  return get<ScreenView>(`/servers/${encodeURIComponent(server)}/screen`, params)
+}
+
+// ScreenInput은 서버로 보내는 마우스나 키보드 입력 하나다. 위치는 화면 전체에 대한 비율(0~1)이다.
+// code는 글자가 아니라 키 자리 이름이라 서버의 키보드 배열과 입력기가 그대로 적용된다.
+export interface ScreenInput {
+  type: 'move' | 'down' | 'up' | 'wheel' | 'keydown' | 'keyup'
+  x?: number
+  y?: number
+  button?: number
+  dx?: number
+  dy?: number
+  code?: string
+}
+
+// sendScreenInput은 조작을 허용한 서버에, 조작을 켠 동안에만 받아들여진다.
+export async function sendScreenInput(server: string, inputs: ScreenInput[]): Promise<void> {
+  const response = await fetch(`/api/v1/servers/${encodeURIComponent(server)}/screen/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ inputs }),
+  })
+  if (!response.ok) throw new Error(`${response.status} ${await response.text()}`)
+}
+
+// seq는 새 화면이 올 때마다 주소를 바꿔 브라우저가 다시 받게 한다.
+export const screenFrameURL = (server: string, seq: number) => `/api/v1/servers/${encodeURIComponent(server)}/screen/frame?seq=${seq}`
+
+// ConsoleScreen은 가상 터미널의 글자 화면이다. 읽지 못했으면 error에 이유가 온다.
+export interface ConsoleScreen {
+  tty: number
+  active: number
+  rows: number
+  cols: number
+  cursor_row: number
+  cursor_col: number
+  lines: string[] | null
+  error?: string
+}
+
+export function fetchConsole(server: string, tty: number) {
+  return get<ConsoleScreen>(`/servers/${encodeURIComponent(server)}/console`, new URLSearchParams({ tty: String(tty) }))
+}

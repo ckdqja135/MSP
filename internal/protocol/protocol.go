@@ -197,12 +197,105 @@ type Gap struct {
 // TaskKind는 중앙 서버가 에이전트에 요청할 수 있는 작업이다. 조회만 존재하고 변경 작업은 없다.
 type TaskKind string
 
-const TaskLogs TaskKind = "logs"
+const (
+	TaskLogs    TaskKind = "logs"
+	TaskConsole TaskKind = "console"
+)
 
 type Task struct {
-	ID   string      `json:"id"`
-	Kind TaskKind    `json:"kind"`
-	Logs *LogRequest `json:"logs,omitempty"`
+	ID      string          `json:"id"`
+	Kind    TaskKind        `json:"kind"`
+	Logs    *LogRequest     `json:"logs,omitempty"`
+	Console *ConsoleRequest `json:"console,omitempty"`
+}
+
+// ConsoleRequest는 텍스트 콘솔의 글자 화면을 요청한다. TTY가 0이면 지금 켜져 있는 가상 터미널이다.
+type ConsoleRequest struct {
+	TTY int `json:"tty,omitempty"`
+}
+
+// ConsoleScreen은 가상 터미널 한 곳의 글자 화면이다. 읽은 순간의 모습이며 입력은 보낼 수 없다.
+// Active는 서버 모니터에 지금 나오는 가상 터미널 번호다. 알 수 없으면 0이다.
+type ConsoleScreen struct {
+	TTY       int      `json:"tty"`
+	Active    int      `json:"active"`
+	Rows      int      `json:"rows"`
+	Cols      int      `json:"cols"`
+	CursorRow int      `json:"cursor_row"`
+	CursorCol int      `json:"cursor_col"`
+	Lines     []string `json:"lines"`
+	Error     string   `json:"error,omitempty"`
+}
+
+// 화면 도우미가 알리는 그래픽 세션 종류다.
+const (
+	ScreenSessionX11     = "x11"
+	ScreenSessionWayland = "wayland"
+)
+
+type ScreenState string
+
+const (
+	ScreenReady       ScreenState = "ready"
+	ScreenUnsupported ScreenState = "unsupported"
+	ScreenError       ScreenState = "error"
+)
+
+// ScreenStatus는 화면 도우미가 알리는 자신의 상태다. 화면을 가져올 수 없으면 이유를 Detail에 적는다.
+// Control은 이 서버에서 원격 조작을 허용했다는 뜻이다. 도우미 설정에서 켜야만 참이 된다.
+type ScreenStatus struct {
+	Session string      `json:"session,omitempty"`
+	State   ScreenState `json:"state"`
+	Detail  string      `json:"detail,omitempty"`
+	Control bool        `json:"control,omitempty"`
+}
+
+// ScreenDemand는 지금 화면을 보는 사람이 있는지 도우미에게 알린다. 보는 사람이 없으면 도우미는 화면을 읽지 않는다.
+// Control은 보는 사람이 조작을 켰다는 뜻이다. 그동안만 도우미가 입력을 받는다.
+type ScreenDemand struct {
+	Capture    bool `json:"capture"`
+	IntervalMS int  `json:"interval_ms,omitempty"`
+	Control    bool `json:"control,omitempty"`
+}
+
+// 화면 보기 창에서 보내는 입력의 종류다.
+const (
+	InputMove    = "move"
+	InputDown    = "down"
+	InputUp      = "up"
+	InputWheel   = "wheel"
+	InputKeyDown = "keydown"
+	InputKeyUp   = "keyup"
+)
+
+// ScreenInput은 화면 보기 창에서 보낸 입력 하나다. 위치는 화면 전체에 대한 비율(0~1)이다.
+// Button은 1 왼쪽, 2 가운데, 3 오른쪽이다. Code는 글자가 아니라 키보드의 물리 키 이름(예: KeyA)이라
+// 서버의 키보드 배열과 입력기가 그대로 적용된다.
+type ScreenInput struct {
+	Type   string  `json:"type"`
+	X      float64 `json:"x,omitempty"`
+	Y      float64 `json:"y,omitempty"`
+	Button int     `json:"button,omitempty"`
+	// DX, DY는 휠을 굴린 칸 수다. DY가 양수면 아래로, DX가 양수면 오른쪽으로 굴린 것이다.
+	DX   int    `json:"dx,omitempty"`
+	DY   int    `json:"dy,omitempty"`
+	Code string `json:"code,omitempty"`
+}
+
+// Valid는 입력이 정해진 범위 안인지 본다. 중앙 서버와 도우미가 각각 확인한다.
+func (i ScreenInput) Valid() bool {
+	inside := i.X >= 0 && i.X <= 1 && i.Y >= 0 && i.Y <= 1
+	switch i.Type {
+	case InputMove:
+		return inside
+	case InputDown, InputUp:
+		return inside && i.Button >= 1 && i.Button <= 3
+	case InputWheel:
+		return inside && i.DX >= -10 && i.DX <= 10 && i.DY >= -10 && i.DY <= 10 && (i.DX != 0 || i.DY != 0)
+	case InputKeyDown, InputKeyUp:
+		return i.Code != "" && len(i.Code) <= 32
+	}
+	return false
 }
 
 // LogRequest는 서비스 안의 컨테이너 로그를 요청한다. 에이전트는 자신의 구성에 있는 컨테이너만 읽는다.

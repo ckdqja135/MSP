@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ckdqja135/MSP/internal/agent/console"
 	"github.com/ckdqja135/MSP/internal/agent/dockerapi"
 	"github.com/ckdqja135/MSP/internal/agent/hostports"
 	"github.com/ckdqja135/MSP/internal/central"
@@ -1336,5 +1337,50 @@ func TestCollectRequestsReportsUnreadableLog(t *testing.T) {
 	instance.collectRequests(context.Background())
 	if instance.collectors["access_log"].State != protocol.CollectorError {
 		t.Errorf("읽지 못한 것을 수집 실패로 표시하지 않았다: %+v", instance.collectors["access_log"])
+	}
+}
+
+func readConsole(t *testing.T, url string) protocol.ConsoleScreen {
+	t.Helper()
+	response, err := http.Get(url + "/api/v1/servers/home-1/console?tty=2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var screen protocol.ConsoleScreen
+	if err := json.NewDecoder(response.Body).Decode(&screen); err != nil {
+		t.Fatal(err)
+	}
+	return screen
+}
+
+func TestConsoleIsMaskedBeforeLeavingTheAgent(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	var asked atomic.Int64
+	h.agent.console = func(tty int) (console.Screen, error) {
+		asked.Store(int64(tty))
+		return console.Screen{TTY: tty, Active: 1, Rows: 2, Cols: 80, CursorRow: 1, Lines: []string{"$ export API_TOKEN=abc123", "$"}}, nil
+	}
+	h.startPolling(t)
+	screen := readConsole(t, h.url)
+	if screen.Error != "" || screen.TTY != 2 || screen.Active != 1 || screen.Rows != 2 || len(screen.Lines) != 2 {
+		t.Fatalf("screen = %+v", screen)
+	}
+	if asked.Load() != 2 {
+		t.Errorf("다른 터미널을 읽었다: %d", asked.Load())
+	}
+	if strings.Contains(screen.Lines[0], "abc123") || !strings.Contains(screen.Lines[0], "가려짐") {
+		t.Errorf("민감정보가 전달됐다: %q", screen.Lines[0])
+	}
+}
+
+func TestConsoleReadFailureReachesTheViewer(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.agent.console = func(int) (console.Screen, error) {
+		return console.Screen{TTY: 2}, errors.New("콘솔 장치를 읽을 권한이 없습니다")
+	}
+	h.startPolling(t)
+	if screen := readConsole(t, h.url); !strings.Contains(screen.Error, "권한") {
+		t.Errorf("읽지 못한 이유를 전하지 않았다: %+v", screen)
 	}
 }

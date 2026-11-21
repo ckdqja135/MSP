@@ -25,3 +25,4 @@ web/dist/
 .idea/
 .vscode/
 msp-deploy-*.tar.gz
+msp-deploy/

@@ -541,7 +541,7 @@ func TestDashboardHasNoMutatingRoutes(t *testing.T) {
 	store := openStore(t, protocol.ModeLive)
 	ts := newTestServer(t, store, "")
 	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
-		for _, path := range []string{"/api/v1/servers", "/api/v1/servers/home-1/topology", "/api/v1/servers/home-1/events"} {
+		for _, path := range []string{"/api/v1/servers", "/api/v1/servers/home-1/topology", "/api/v1/servers/home-1/events", "/api/v1/servers/home-1/console", "/api/v1/servers/home-1/screen", "/api/v1/servers/home-1/screen/frame"} {
 			req, _ := http.NewRequest(method, ts.URL+path, nil)
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {

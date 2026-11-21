@@ -47,6 +47,7 @@ type LogRelay struct {
 	sessions map[string]*logSession
 	lastPoll map[string]time.Time
 	counts   map[string]int
+	consoles map[string]*consoleSession
 }
 
 func NewLogRelay() *LogRelay {
@@ -55,6 +56,7 @@ func NewLogRelay() *LogRelay {
 		sessions: map[string]*logSession{},
 		lastPoll: map[string]time.Time{},
 		counts:   map[string]int{},
+		consoles: map[string]*consoleSession{},
 	}
 }
 

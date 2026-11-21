@@ -1093,6 +1093,152 @@ p {
   font-size: 11.5px;
 }
 
+/* 화면 보기 */
+.screen-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.screen-button:hover:not(:disabled) {
+  background: var(--accent-tint);
+}
+
+.screen-button:disabled {
+  color: var(--ink-soft);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+}
+
+.screen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgb(18 36 92 / 0.45);
+}
+
+.screen-window {
+  display: flex;
+  flex-direction: column;
+  width: min(1500px, 95vw);
+  height: 92vh;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  box-shadow: 0 10px 30px rgb(30 50 110 / 0.3);
+}
+
+.screen-head,
+.screen-bar,
+.screen-foot {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  flex-wrap: wrap;
+}
+
+.screen-head {
+  border-bottom: 1px solid var(--line);
+}
+
+.screen-bar {
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+
+.screen-foot {
+  border-top: 1px solid var(--line-soft);
+  font-size: 12px;
+}
+
+.screen-stale {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+/* 서버 화면은 어두운 바탕 위에 비율을 지켜 맞춘다. */
+.screen-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  background: #0f1730;
+}
+
+.screen-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+/* 조작 중인 화면은 테두리로 구분한다. */
+.screen-image.controlling {
+  outline: 2px solid var(--critical);
+  outline-offset: -2px;
+}
+
+.screen-controlling {
+  color: var(--critical);
+  font-weight: 600;
+}
+
+.tool-button.control-on {
+  background: var(--critical);
+  border-color: var(--critical);
+  color: #fff;
+}
+
+.screen-head .tool-button:disabled {
+  color: var(--ink-soft);
+  border-color: var(--line-soft);
+  cursor: not-allowed;
+}
+
+.screen-stage .screen-notice {
+  color: #dfe6fb;
+}
+
+.screen-stage .screen-notice p {
+  color: #aab6dc;
+}
+
+.screen-notice {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 24px;
+  text-align: center;
+}
+
+.screen-notice p {
+  max-width: 620px;
+  color: var(--ink-soft);
+}
+
+.console-screen {
+  align-self: flex-start;
+  margin: 0 auto;
+  padding: 12px 14px;
+  color: #e6ebf8;
+  font: 12.5px/1.3 var(--mono);
+  white-space: pre;
+}
+
 /* 하단 패널 */
 .bottom-panel {
   display: flex;

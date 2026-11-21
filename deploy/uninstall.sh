@@ -9,6 +9,19 @@ purge=0
 systemctl disable --now msp-agent.service msp-central.service 2>/dev/null || true
 rm -f /etc/systemd/system/msp-agent.service /etc/systemd/system/msp-central.service /etc/systemd/system/msp.slice
 systemctl daemon-reload
+
+# 화면 도우미는 사용자 서비스다. 돌고 있으면 멈춘 뒤 지운다.
+screen_conf=/etc/systemd/user/msp-screen.service.d/user.conf
+screen_user=$(sed -n 's/^ConditionUser=//p' "$screen_conf" 2>/dev/null || true)
+if [ -n "$screen_user" ] && id "$screen_user" >/dev/null 2>&1; then
+    screen_uid=$(id -u "$screen_user")
+    if [ -S "/run/user/$screen_uid/bus" ]; then
+        runuser -u "$screen_user" -- env XDG_RUNTIME_DIR="/run/user/$screen_uid" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$screen_uid/bus" \
+            systemctl --user stop msp-screen.service 2>/dev/null || true
+    fi
+fi
+systemctl --global disable msp-screen.service 2>/dev/null || true
+rm -rf /etc/systemd/user/msp-screen.service /etc/systemd/user/msp-screen.service.d
 rm -rf /opt/msp
 
 if [ "$purge" -eq 1 ]; then

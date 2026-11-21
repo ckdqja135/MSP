@@ -85,11 +85,12 @@ func (h *Hub) Publish(message string) {
 }
 
 type Server struct {
-	store *Store
-	hub   *Hub
-	cfg   Config
-	logs  *LogRelay
-	now   func() time.Time
+	store   *Store
+	hub     *Hub
+	cfg     Config
+	logs    *LogRelay
+	screens *ScreenRelay
+	now     func() time.Time
 }
 
 func NewServer(store *Store, hub *Hub, cfg Config) *Server {
@@ -97,7 +98,7 @@ func NewServer(store *Store, hub *Hub, cfg Config) *Server {
 	if cfg.LogStreamer == nil {
 		cfg.LogStreamer = relay.Stream
 	}
-	return &Server{store: store, hub: hub, cfg: cfg, logs: relay, now: func() time.Time { return time.Now().UTC() }}
+	return &Server{store: store, hub: hub, cfg: cfg, logs: relay, screens: NewScreenRelay(), now: func() time.Time { return time.Now().UTC() }}
 }
 
 func (s *Server) Hub() *Hub { return s.hub }
@@ -112,6 +113,10 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/v1/servers/{id}/requests", s.handleRequests)
 	api.HandleFunc("GET /api/v1/servers/{id}/samples", s.handleSamples)
 	api.HandleFunc("GET /api/v1/servers/{id}/logs", s.handleLogs)
+	api.HandleFunc("GET /api/v1/servers/{id}/console", s.handleConsole)
+	api.HandleFunc("GET /api/v1/servers/{id}/screen", s.handleScreen)
+	api.HandleFunc("GET /api/v1/servers/{id}/screen/frame", s.handleScreenImage)
+	api.HandleFunc("POST /api/v1/servers/{id}/screen/input", s.handleScreenInput)
 	api.HandleFunc("GET /api/v1/alerts", s.handleAlerts)
 	api.HandleFunc("GET /api/v1/stream", s.handleStream)
 	if s.cfg.WebDir != "" {
@@ -122,6 +127,10 @@ func (s *Server) Handler() http.Handler {
 	root.HandleFunc("POST /agent/v1/batches", s.handleBatch)
 	root.HandleFunc("GET /agent/v1/tasks", s.handleTaskPoll)
 	root.HandleFunc("POST /agent/v1/tasks/{id}/logs", s.handleLogChunk)
+	root.HandleFunc("POST /agent/v1/tasks/{id}/console", s.handleConsoleReply)
+	root.HandleFunc("POST /agent/v1/screen/poll", s.handleScreenPoll)
+	root.HandleFunc("POST /agent/v1/screen/frame", s.handleScreenFrame)
+	root.HandleFunc("GET /agent/v1/screen/input", s.handleScreenInputStream)
 	root.Handle("/", s.dashboardGuard(api))
 	return root
 }
@@ -165,13 +174,22 @@ func isLoopbackHost(hostport string) bool {
 
 // authenticateAgent는 에이전트 요청을 인증하고 서버 ID를 돌려준다.
 func (s *Server) authenticateAgent(w http.ResponseWriter, r *http.Request) (string, bool) {
+	return s.authenticate(w, r, s.store.Authenticate)
+}
+
+// authenticateScreen은 화면 도우미 요청을 인증한다. 에이전트 토큰으로는 통과하지 못한다.
+func (s *Server) authenticateScreen(w http.ResponseWriter, r *http.Request) (string, bool) {
+	return s.authenticate(w, r, s.store.AuthenticateScreen)
+}
+
+func (s *Server) authenticate(w http.ResponseWriter, r *http.Request, check func(ctx context.Context, serverID, token string) bool) (string, bool) {
 	if s.store.Mode() == protocol.ModeDemo {
 		http.Error(w, "데모 모드는 실제 에이전트 데이터를 받지 않습니다", http.StatusForbidden)
 		return "", false
 	}
 	serverID := r.Header.Get("X-MSP-Server")
 	token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if serverID == "" || !s.store.Authenticate(r.Context(), serverID, token) {
+	if serverID == "" || !check(r.Context(), serverID, token) {
 		http.Error(w, "인증 실패", http.StatusUnauthorized)
 		return "", false
 	}

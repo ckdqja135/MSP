@@ -169,6 +169,37 @@ func (a *Agent) postLogChunk(ctx context.Context, taskID string, chunk protocol.
 	return ack.Continue, nil
 }
 
+// runConsoleTask는 콘솔 화면을 한 번 읽어 보낸다. 줄마다 로그와 같은 규칙으로 민감정보를 가린다.
+func (a *Agent) runConsoleTask(ctx context.Context, task protocol.Task) {
+	screen, err := a.console(task.Console.TTY)
+	reply := protocol.ConsoleScreen{
+		TTY: screen.TTY, Active: screen.Active, Rows: screen.Rows, Cols: screen.Cols,
+		CursorRow: screen.CursorRow, CursorCol: screen.CursorCol, Lines: make([]string, len(screen.Lines)),
+	}
+	for i, line := range screen.Lines {
+		reply.Lines[i] = mask.Line(line)
+	}
+	if err != nil {
+		reply.Error = err.Error()
+	}
+	body, err := json.Marshal(reply)
+	if err != nil {
+		return
+	}
+	target := strings.TrimRight(a.cfg.CentralURL, "/") + "/agent/v1/tasks/" + task.ID + "/console"
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	a.authorize(request)
+	response, err := a.client.Do(request)
+	if err != nil {
+		log.Printf("콘솔 화면 전송 실패: %v", err)
+		return
+	}
+	response.Body.Close()
+}
+
 // fetchTask는 중앙 서버가 줄 작업을 기다린다. 에이전트가 먼저 연결하므로 인바운드 포트가 필요 없다.
 func (a *Agent) fetchTask(ctx context.Context) (*protocol.Task, error) {
 	target := strings.TrimRight(a.cfg.CentralURL, "/") + "/agent/v1/tasks"
@@ -215,6 +246,10 @@ func (a *Agent) pollTasks(ctx context.Context) {
 		}
 		backoff = time.Second
 		if task == nil {
+			continue
+		}
+		if task.Kind == protocol.TaskConsole && task.Console != nil {
+			go a.runConsoleTask(ctx, *task)
 			continue
 		}
 		// 알 수 없는 작업은 실행하지 않는다.
