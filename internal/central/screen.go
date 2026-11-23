@@ -240,8 +240,13 @@ func (r *ScreenRelay) openInput(serverID string) (<-chan protocol.ScreenInput, f
 	if s.inputs == nil {
 		s.inputs = make(chan protocol.ScreenInput, inputBacklog)
 	}
-	for len(s.inputs) > 0 {
-		<-s.inputs
+	// 기다리지 않고 비운다. 앞서 연 통로가 그 사이에 입력을 가져가도 잠금을 쥔 채 멈추지 않는다.
+	for drained := false; !drained; {
+		select {
+		case <-s.inputs:
+		default:
+			drained = true
+		}
 	}
 	s.streams++
 	return s.inputs, func() {

@@ -26,3 +26,4 @@ web/dist/
 .vscode/
 msp-deploy-*.tar.gz
 msp-deploy/
+/run.sh

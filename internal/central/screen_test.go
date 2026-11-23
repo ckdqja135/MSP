@@ -380,6 +380,16 @@ func TestInputPassesOnlyWhileControlIsOn(t *testing.T) {
 		t.Errorf("input = %+v", got)
 	}
 
+	// 도우미가 통로를 다시 열면 앞서 쌓인 입력은 버린다. 한참 전에 누른 것이 뒤늦게 들어가면 안 된다.
+	if err := relay.input("home-1", click); err != nil {
+		t.Fatal(err)
+	}
+	again, releaseAgain, ok := relay.openInput("home-1")
+	if !ok || len(again) != 0 {
+		t.Errorf("다시 연 통로에 지난 입력이 남았다: %d", len(again))
+	}
+	releaseAgain()
+
 	// 조작을 끄면 바로 막힌다.
 	relay.watch("home-1", "0")
 	if err := relay.input("home-1", click); err != ErrControlNotReady {

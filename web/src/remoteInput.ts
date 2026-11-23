@@ -33,30 +33,73 @@ export function wheelSteps(pending: number): { steps: number; rest: number } {
   return { steps: Math.max(-MAX_WHEEL, Math.min(MAX_WHEEL, steps)), rest: pending - steps * WHEEL_STEP }
 }
 
+// Held는 서버에서 눌려 있을 수 있는 키와 버튼이다. 누름을 보낸 때부터 뗌이 도착한 것을 확인할 때까지 들어 있다.
+export interface Held {
+  keys: Set<string>
+  buttons: Set<number>
+}
+
+// settle은 보낸 묶음의 결과를 반영한다. 도착했으면 순서대로 누름은 넣고 뗌은 뺀다.
+// 도착을 확인하지 못했으면 누름만 넣는다. 일부는 처리됐을 수 있고, 뗌은 가지 않았다고 봐야 하기 때문이다.
+export function settle(held: Held, batch: ScreenInput[], delivered: boolean): void {
+  for (const input of batch) {
+    if (input.type === 'keydown' && input.code) held.keys.add(input.code)
+    else if (input.type === 'down' && input.button) held.buttons.add(input.button)
+    else if (delivered && input.type === 'keyup' && input.code) held.keys.delete(input.code)
+    else if (delivered && input.type === 'up' && input.button) held.buttons.delete(input.button)
+  }
+}
+
+// releases는 서버에서 눌려 있을 수 있는 키와 버튼을 모두 떼는 입력을 만든다.
+export function releases(held: Held, point: { x: number; y: number }): ScreenInput[] {
+  return [
+    ...[...held.keys].map((code): ScreenInput => ({ type: 'keyup', code })),
+    ...[...held.buttons].map((button): ScreenInput => ({ type: 'up', ...point, button })),
+  ]
+}
+
+const BATCH = 200
+// 전달에 실패하면 이만큼 쉬었다가 다시 보낸다.
+const RETRY_MS = 500
+
 // captureInput은 화면 그림 위의 마우스와 창 전체의 키보드 입력을 모아 send로 넘긴다.
 // 돌려주는 함수를 부르면 눌린 채 남은 키와 버튼을 떼고 멈춘다.
 export function captureInput(image: HTMLElement, send: (inputs: ScreenInput[]) => Promise<void>): () => void {
   const queue: ScreenInput[] = []
   const keys = new Set<string>()
   const buttons = new Set<number>()
+  const remote: Held = { keys: new Set(), buttons: new Set() }
   let point = { x: 0.5, y: 0.5 }
   let wheelX = 0
   let wheelY = 0
   let sending = false
+  let retryAt = 0
+  let current: Promise<void> = Promise.resolve()
 
   // 순서가 바뀌지 않게 한 번에 하나씩 보낸다.
   const flush = async () => {
-    if (sending || queue.length === 0) return
+    if (queue.length === 0 || Date.now() < retryAt) return
     sending = true
+    const batch = queue.splice(0, BATCH)
     try {
-      await send(queue.splice(0, 200))
+      await send(batch)
+      settle(remote, batch, true)
     } catch {
-      // 조작이 꺼졌거나 연결이 끊긴 경우다. 화면 상태가 따로 알려 준다.
+      // 조작이 꺼졌거나 연결이 끊긴 경우다. 밀린 입력은 버린다. 뒤늦게 들어가면 엉뚱한 곳을 누르게 된다.
+      // 대신 서버에 눌려 있을 수 있는 키와 버튼은 뗌이 도착할 때까지 다시 보낸다. 뗌이 빠지면 서버에서 키가 계속 입력된다.
+      settle(remote, batch, false)
+      queue.length = 0
+      keys.clear()
+      buttons.clear()
+      queue.push(...releases(remote, point))
+      retryAt = Date.now() + RETRY_MS
     } finally {
       sending = false
     }
   }
-  const timer = setInterval(flush, 30)
+  const timer = setInterval(() => {
+    if (!sending) current = flush()
+  }, 30)
 
   const locate = (event: MouseEvent) => {
     const box = image.getBoundingClientRect()
@@ -134,7 +177,14 @@ export function captureInput(image: HTMLElement, send: (inputs: ScreenInput[]) =
     window.removeEventListener('keydown', onKeyDown, true)
     window.removeEventListener('keyup', onKeyUp, true)
     window.removeEventListener('blur', releaseAll)
-    releaseAll()
-    if (queue.length > 0) void send(queue.splice(0)).catch(() => undefined)
+    // 보내는 중인 묶음이 끝난 뒤에 뗀다. 앞지르면 뒤늦게 도착한 누름이 눌린 채로 남는다.
+    // 아직 보내지 않은 입력은 버리고, 서버에 눌려 있을 수 있는 것만 뗀다.
+    void current
+      .then(() => {
+        queue.length = 0
+        const last = releases(remote, point)
+        return last.length > 0 ? send(last) : undefined
+      })
+      .catch(() => undefined)
   }
 }
