@@ -1121,7 +1121,7 @@ func TestHostServicesExcludeDockerAndLoopback(t *testing.T) {
 		{IP: "0.0.0.0", Port: 8080},
 		{IP: "127.0.0.1", Port: 631, Process: "cupsd"},
 		{IP: "0.0.0.0", Port: 9000, Process: "myapp"},
-	}, nil, containers, nil)
+	}, nil, containers, nil, false)
 	if len(services) != 1 || services[0].Name != "myapp" || services[0].Evidence != protocol.HostEvidenceOwner {
 		t.Errorf("services = %+v", services)
 	}
@@ -1132,7 +1132,7 @@ func TestHostServiceNameIsOnlyGuessedWithEvidence(t *testing.T) {
 		{IP: "0.0.0.0", Port: 80},
 		{IP: "0.0.0.0", Port: 443},
 		{IP: "0.0.0.0", Port: 9999},
-	}, map[string]bool{"nginx": true}, nil, nil)
+	}, map[string]bool{"nginx": true}, nil, nil, false)
 	nginx := hostServiceNamed(t, services, "nginx")
 	if nginx.Evidence != protocol.HostEvidenceName || len(nginx.Ports) != 2 {
 		t.Errorf("nginx = %+v", nginx)
@@ -1148,28 +1148,28 @@ func TestAllLoopbackAddressesAreExcluded(t *testing.T) {
 		{IP: "127.0.0.53", Port: 53},
 		{IP: "127.0.0.54", Port: 53},
 		{IP: "::1", Port: 631},
-	}, nil, nil, nil)
+	}, nil, nil, nil, false)
 	if len(services) != 0 {
 		t.Errorf("루프백을 공개 포트로 봤다: %+v", services)
 	}
 }
 
 func TestAmbiguousPortIsNotGuessed(t *testing.T) {
-	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"nginx": true, "apache2": true}, nil, nil)
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"nginx": true, "apache2": true}, nil, nil, false)
 	if len(services) != 1 || services[0].Name != "" || services[0].Evidence != protocol.HostEvidenceUnknown {
 		t.Errorf("후보가 둘인데 하나로 단정했다: %+v", services)
 	}
 }
 
 func TestWellKnownPortWithoutProcessIsNotNamed(t *testing.T) {
-	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"sshd": true}, nil, nil)
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, map[string]bool{"sshd": true}, nil, nil, false)
 	if services[0].Name != "" {
 		t.Errorf("프로세스가 없는데 이름을 붙였다: %+v", services[0])
 	}
 }
 
 func TestSocketOwnerWinsOverGuess(t *testing.T) {
-	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80, Process: "myproxy"}}, map[string]bool{"nginx": true}, nil, nil)
+	services := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80, Process: "myproxy"}}, map[string]bool{"nginx": true}, nil, nil, false)
 	if services[0].Name != "myproxy" || services[0].Evidence != protocol.HostEvidenceOwner {
 		t.Errorf("services = %+v", services)
 	}
@@ -1177,11 +1177,11 @@ func TestSocketOwnerWinsOverGuess(t *testing.T) {
 
 func TestDeclaredServiceStaysVisibleWhenClosed(t *testing.T) {
 	declared := []DeclaredHostService{{Name: "nginx", Ports: []int{80, 443}}}
-	open := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, nil, nil, declared)
+	open := deriveHostServices([]hostports.Listener{{IP: "0.0.0.0", Port: 80}}, nil, nil, declared, false)
 	if !open[0].Listening || open[0].Evidence != protocol.HostEvidenceConfig {
 		t.Errorf("열림 = %+v", open[0])
 	}
-	closed := deriveHostServices(nil, nil, nil, declared)
+	closed := deriveHostServices(nil, nil, nil, declared, false)
 	if len(closed) != 1 || closed[0].Listening || len(closed[0].Ports) != 2 {
 		t.Errorf("닫힘 = %+v", closed)
 	}
@@ -1189,7 +1189,7 @@ func TestDeclaredServiceStaysVisibleWhenClosed(t *testing.T) {
 
 func TestDeclaredLoopbackServiceIsIncluded(t *testing.T) {
 	declared := []DeclaredHostService{{Name: "local-db", Ports: []int{5432}}}
-	services := deriveHostServices([]hostports.Listener{{IP: "127.0.0.1", Port: 5432}}, nil, nil, declared)
+	services := deriveHostServices([]hostports.Listener{{IP: "127.0.0.1", Port: 5432}}, nil, nil, declared, false)
 	if len(services) != 1 || services[0].Name != "local-db" || !services[0].Listening {
 		t.Errorf("services = %+v", services)
 	}
@@ -1382,5 +1382,141 @@ func TestConsoleReadFailureReachesTheViewer(t *testing.T) {
 	h.startPolling(t)
 	if screen := readConsole(t, h.url); !strings.Contains(screen.Error, "권한") {
 		t.Errorf("읽지 못한 이유를 전하지 않았다: %+v", screen)
+	}
+}
+
+func TestLocalViewShowsLoopbackServersButNotTemporaryPorts(t *testing.T) {
+	listeners := []hostports.Listener{
+		{IP: "127.0.0.1", Port: 5173, Process: "node", PID: 10},
+		{IP: "::1", Port: 3000, Process: "node", PID: 11},
+		{IP: "127.0.0.1", Port: 61234, Process: "editor", PID: 12},
+		{IP: "0.0.0.0", Port: 58000, Process: "sync", PID: 13},
+	}
+	// 서버를 볼 때는 밖에서 닿지 않는 포트를 뺀다.
+	if services := deriveHostServices(listeners, nil, nil, nil, false); len(services) != 1 || services[0].Name != "sync" {
+		t.Errorf("서버 보기 = %+v", services)
+	}
+	// 자기 컴퓨터를 볼 때는 개발 서버가 보여야 한다. 도구가 잠깐 여는 임시 포트는 뺀다.
+	services := deriveHostServices(listeners, nil, nil, nil, true)
+	names := map[string]int{}
+	for _, service := range services {
+		names[service.Name] = len(service.Ports)
+	}
+	if len(services) != 2 || names["node"] != 2 || names["sync"] != 1 {
+		t.Errorf("이 컴퓨터 보기 = %+v", services)
+	}
+}
+
+// missingDocker는 접속할 소켓이 없을 때 Docker 클라이언트가 내는 오류와 같은 꼴이다.
+var missingDocker = fmt.Errorf("dial unix /var/run/docker.sock: %w", os.ErrNotExist)
+
+func TestComputerWithoutDockerStillShowsOpenPorts(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.agent.cfg.Local = true
+	h.docker.pingErr, h.docker.topoErr = missingDocker, missingDocker
+	h.host.listenErr = nil
+	h.host.listeners = []hostports.Listener{
+		{IP: "127.0.0.1", Port: 5173, Process: "node", PID: 10},
+		// 수집기 자신이 연 포트는 보여주지 않는다.
+		{IP: "127.0.0.1", Port: 8787, Process: "msp", PID: os.Getpid()},
+	}
+	h.agent.collectTopology(context.Background())
+	h.flush(t)
+	h.drain(t)
+
+	ctx := context.Background()
+	servers, err := h.store.Servers(ctx, h.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Docker가 없는 것은 장애가 아니다.
+	if servers[0].Reachability.State != "ok" || !servers[0].DockerAbsent || servers[0].DockerOK {
+		t.Errorf("server = %+v", servers[0])
+	}
+	if status := collectorOf(t, h, "docker"); status.State != protocol.CollectorUnsupported || status.Error == "" {
+		t.Errorf("docker 수집기 = %+v", status)
+	}
+	view, err := h.store.Topology(ctx, "home-1", nil, h.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.Projects) != 0 || len(view.HostServices) != 1 || view.HostServices[0].Name != "node" {
+		t.Errorf("구성 = %+v", view.HostServices)
+	}
+
+	// 나중에 Docker가 켜지면 컨테이너가 보인다.
+	h.docker.pingErr, h.docker.topoErr = nil, nil
+	h.docker.containers = []protocol.Container{api("aaa", "")}
+	h.agent.collectTopology(ctx)
+	h.flush(t)
+	h.drain(t)
+	if view, err = h.store.Topology(ctx, "home-1", nil, h.clock.now()); err != nil || len(view.Projects) != 1 {
+		t.Fatalf("Docker가 켜진 뒤 구성 = %+v, %v", view.Projects, err)
+	}
+
+	// 쓰던 Docker가 사라지면 없는 컴퓨터로 보지 않는다. 컨테이너를 지우지 않고 응답 없음으로 알린다.
+	h.docker.pingErr, h.docker.topoErr = missingDocker, missingDocker
+	h.agent.collectTopology(ctx)
+	h.flush(t)
+	h.drain(t)
+	if view, err = h.store.Topology(ctx, "home-1", nil, h.clock.now()); err != nil || len(view.Projects) != 1 {
+		t.Errorf("Docker가 사라진 뒤 컨테이너를 지웠다: %+v, %v", view.Projects, err)
+	}
+	if servers, _ = h.store.Servers(ctx, h.clock.now()); servers[0].Reachability.State != "docker_down" || servers[0].DockerAbsent {
+		t.Errorf("Docker가 사라진 뒤 = %+v", servers[0].Reachability)
+	}
+}
+
+func TestInstalledServerNeverTreatsMissingDockerAsAbsent(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.docker.pingErr, h.docker.topoErr = missingDocker, missingDocker
+	h.host.listenErr = nil
+	h.host.listeners = []hostports.Listener{{IP: "0.0.0.0", Port: 9000, Process: "myapp", PID: 10}}
+	h.agent.collectTopology(context.Background())
+	h.flush(t)
+	h.drain(t)
+
+	ctx := context.Background()
+	servers, err := h.store.Servers(ctx, h.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 서버가 켜질 때 Docker 소켓이 아직 없을 수 있다. 정상으로 보이면 장애를 놓친다.
+	if servers[0].Reachability.State != "docker_down" || servers[0].DockerAbsent {
+		t.Errorf("server = %+v", servers[0].Reachability)
+	}
+	if status := collectorOf(t, h, "docker"); status.State != protocol.CollectorError {
+		t.Errorf("docker 수집기 = %+v", status)
+	}
+	// 컨테이너가 없는 구성을 보내 앞서 받은 구성을 덮지 않는다.
+	if _, err := h.store.Topology(ctx, "home-1", nil, h.clock.now()); !errors.Is(err, central.ErrNotFound) {
+		t.Errorf("Docker를 읽지 못했는데 구성을 보냈다: %v", err)
+	}
+}
+
+func TestLocalViewShowsPortsWhenDockerRefuses(t *testing.T) {
+	h := newHarness(t, 1<<30)
+	h.agent.cfg.Local = true
+	// 소켓은 있는데 꺼져 있거나 읽을 권한이 없는 경우다.
+	refused := errors.New("dial unix /var/run/docker.sock: connect: permission denied")
+	h.docker.pingErr, h.docker.topoErr = refused, refused
+	h.host.listenErr = nil
+	h.host.listeners = []hostports.Listener{{IP: "127.0.0.1", Port: 3000, Process: "node", PID: 10}}
+	h.agent.collectTopology(context.Background())
+	h.flush(t)
+	h.drain(t)
+
+	ctx := context.Background()
+	view, err := h.store.Topology(ctx, "home-1", nil, h.clock.now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(view.HostServices) != 1 || view.HostServices[0].Name != "node" {
+		t.Errorf("Docker에 연결하지 못하면 열린 포트도 보이지 않는다: %+v", view.HostServices)
+	}
+	// 없는 것이 아니라 연결하지 못한 것이므로 그렇게 알린다.
+	servers, _ := h.store.Servers(ctx, h.clock.now())
+	if servers[0].Reachability.State != "docker_down" || servers[0].DockerAbsent {
+		t.Errorf("server = %+v", servers[0].Reachability)
 	}
 }

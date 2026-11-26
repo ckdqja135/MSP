@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"runtime"
 	"time"
 
 	"github.com/ckdqja135/MSP/internal/agent/hostports"
@@ -95,7 +96,12 @@ func (h SystemHost) Temperature(ctx context.Context) (float64, bool, error) {
 	return highest, true, err
 }
 
-func (h SystemHost) Listeners(context.Context) ([]hostports.Listener, map[string]bool, error) {
+func (h SystemHost) Listeners(ctx context.Context) ([]hostports.Listener, map[string]bool, error) {
+	// 리눅스가 아니면 주인을 알아낸 포트만 이름이 붙는다. 이름을 추정할 프로세스 목록은 읽지 않는다.
+	if runtime.GOOS != "linux" {
+		listeners, err := hostports.ScanSystem(ctx)
+		return listeners, nil, err
+	}
 	listeners, err := hostports.Scan(procRoot)
 	if err != nil {
 		return nil, nil, err

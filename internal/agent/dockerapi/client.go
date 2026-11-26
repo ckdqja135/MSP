@@ -67,11 +67,10 @@ type Client struct {
 	base string
 }
 
-// New는 유닉스 소켓으로 Docker에 접속하는 클라이언트를 만든다.
-func New(socketPath string) *Client {
+// New는 같은 컴퓨터의 Docker에 접속하는 클라이언트를 만든다. endpoint는 유닉스 소켓 경로이고 Windows에서는 파이프 이름이다.
+func New(endpoint string) *Client {
 	dial := func(ctx context.Context, _, _ string) (net.Conn, error) {
-		var d net.Dialer
-		return d.DialContext(ctx, "unix", socketPath)
+		return dialEndpoint(ctx, endpoint)
 	}
 	return newClient("http://docker", &http.Transport{DialContext: dial})
 }

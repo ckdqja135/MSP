@@ -3,6 +3,7 @@ module github.com/ckdqja135/MSP
 go 1.27.3
 
 require (
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/shirou/gopsutil/v4 v4.26.10
 	modernc.org/sqlite v1.61.1
 )

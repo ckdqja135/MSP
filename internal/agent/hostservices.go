@@ -2,6 +2,7 @@ package agent
 
 import (
 	"net"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -40,8 +41,19 @@ func guessName(port int, running map[string]bool) string {
 	return found
 }
 
-// deriveHostServices는 열린 포트를 서비스로 묶는다. 컨테이너가 공개한 포트와 루프백 전용 포트는 제외한다.
-func deriveHostServices(listeners []hostports.Listener, running map[string]bool, containers []protocol.Container, declared []DeclaredHostService) []protocol.HostService {
+// ephemeralFrom부터는 운영체제가 임시로 골라 주는 포트 범위다. 프로그램이 번호를 정해서 연 포트가 아닐 가능성이 높다.
+// 리눅스는 기본 범위가 더 낮은 번호에서 시작한다.
+var ephemeralFrom = func() int {
+	if runtime.GOOS == "linux" {
+		return 32768
+	}
+	return 49152
+}()
+
+// deriveHostServices는 열린 포트를 서비스로 묶는다. 컨테이너가 공개한 포트는 제외한다.
+// 루프백 전용 포트는 includeLoopback일 때만 넣고, 그때도 임시 범위의 포트는 뺀다.
+// 편집기나 도구가 잠깐 열었다 닫는 포트라 넣으면 열림과 닫힘 기록만 쌓인다. 설정에 적은 포트는 언제나 넣는다.
+func deriveHostServices(listeners []hostports.Listener, running map[string]bool, containers []protocol.Container, declared []DeclaredHostService, includeLoopback bool) []protocol.HostService {
 	published := map[int]bool{}
 	for _, c := range containers {
 		for _, port := range c.Ports {
@@ -61,7 +73,10 @@ func deriveHostServices(listeners []hostports.Listener, running map[string]bool,
 	groups := map[key][]protocol.HostPort{}
 	for _, listener := range listeners {
 		declaredName, isDeclared := declaredByPort[listener.Port]
-		if published[listener.Port] || (isLoopbackIP(listener.IP) && !isDeclared) {
+		if published[listener.Port] {
+			continue
+		}
+		if isLoopbackIP(listener.IP) && !isDeclared && (!includeLoopback || listener.Port >= ephemeralFrom) {
 			continue
 		}
 		var group key

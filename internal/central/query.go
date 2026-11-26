@@ -18,18 +18,20 @@ func fromMillis(ms int64) time.Time { return time.UnixMilli(ms).UTC() }
 
 // ServerView는 서버 요약이다. 호스트 지표는 최신값과 측정 시각을 함께 준다.
 type ServerView struct {
-	ID            string                     `json:"id"`
-	Mode          protocol.Mode              `json:"mode"`
-	LastSeen      *time.Time                 `json:"last_seen"`
-	ClockSkewMS   int64                      `json:"clock_skew_ms"`
-	AgentVersion  string                     `json:"agent_version"`
-	BootTime      *time.Time                 `json:"boot_time"`
-	UptimeSeconds int64                      `json:"uptime_seconds"`
-	DockerOK      bool                       `json:"docker_ok"`
-	Collectors    []protocol.CollectorStatus `json:"collectors"`
-	Reachability  Reachability               `json:"reachability"`
-	SameHost      bool                       `json:"same_host"`
-	Metrics       map[string]LatestValue     `json:"metrics"`
+	ID            string        `json:"id"`
+	Mode          protocol.Mode `json:"mode"`
+	LastSeen      *time.Time    `json:"last_seen"`
+	ClockSkewMS   int64         `json:"clock_skew_ms"`
+	AgentVersion  string        `json:"agent_version"`
+	BootTime      *time.Time    `json:"boot_time"`
+	UptimeSeconds int64         `json:"uptime_seconds"`
+	DockerOK      bool          `json:"docker_ok"`
+	// DockerAbsent는 Docker가 없는 컴퓨터라는 뜻이다. 응답하지 않는 것과 달리 문제로 보지 않는다.
+	DockerAbsent bool                       `json:"docker_absent"`
+	Collectors   []protocol.CollectorStatus `json:"collectors"`
+	Reachability Reachability               `json:"reachability"`
+	SameHost     bool                       `json:"same_host"`
+	Metrics      map[string]LatestValue     `json:"metrics"`
 }
 
 func (s *Store) Servers(ctx context.Context, now time.Time) ([]ServerView, error) {
@@ -80,7 +82,12 @@ func (s *Store) Servers(ctx context.Context, now time.Time) ([]ServerView, error
 			return nil, err
 		}
 		servers[i].SameHost = s.sameHost[servers[i].ID]
-		servers[i].Reachability = reachabilityOf(seen, now, servers[i].DockerOK, externalOK, servers[i].SameHost)
+		for _, collector := range servers[i].Collectors {
+			if collector.Name == "docker" && collector.State == protocol.CollectorUnsupported {
+				servers[i].DockerAbsent = !servers[i].DockerOK
+			}
+		}
+		servers[i].Reachability = reachabilityOf(seen, now, servers[i].DockerOK || servers[i].DockerAbsent, externalOK, servers[i].SameHost)
 		latest, err := s.latestSamples(ctx, servers[i].ID, now)
 		if err != nil {
 			return nil, err

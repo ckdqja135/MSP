@@ -122,6 +122,8 @@ export interface Server {
   boot_time: string | null
   uptime_seconds: number
   docker_ok: boolean
+  // Docker가 없는 컴퓨터다. 응답하지 않는 것과 달리 문제가 아니다.
+  docker_absent?: boolean
   collectors: Collector[]
   reachability: { state: string; label: string; detail: string }
   metrics: Record<string, LatestValue>

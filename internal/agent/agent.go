@@ -95,6 +95,11 @@ type Config struct {
 	Probes       []ProbeConfig
 	HostServices []DeclaredHostService
 	AccessLogs   []AccessLogConfig
+	// Local이면 설치해 둔 서버가 아니라 실행한 사람의 컴퓨터를 보는 것이다. 서버와 세 가지가 다르다.
+	// 이 컴퓨터 안에서만 닿는 포트도 보여준다. 개발 서버는 대개 그런 포트로 뜬다.
+	// Docker에 연결하지 못해도 열린 포트는 보여준다. Docker가 없는 컴퓨터일 수 있다.
+	// 꺼 둔 시간을 수집 공백으로 남기지 않는다. 볼 때만 켜는 프로그램이기 때문이다.
+	Local bool
 }
 
 // ValidateCentralURL은 토큰이 평문으로 나가는 설정을 거부한다. 같은 장비 안의 시험만 예외로 둔다.
@@ -150,8 +155,10 @@ type Agent struct {
 	lastHash       string
 	lastTopologyAt time.Time
 	dockerOK       bool
-	collectors     map[string]protocol.CollectorStatus
-	limiter        *eventLimiter
+	// dockerSeen은 이번 실행에서 Docker에 한 번이라도 연결됐는지다. 없던 것과 끊긴 것을 구분한다.
+	dockerSeen bool
+	collectors map[string]protocol.CollectorStatus
+	limiter    *eventLimiter
 
 	prevNet     *rateSample
 	prevDiskIO  *rateSample
@@ -362,16 +369,38 @@ func (a *Agent) collectTemperature(ctx context.Context) {
 	}
 }
 
+// setDocker는 Docker 수집 상태를 남긴다. 호출자가 잠금을 잡은 상태에서 부른다.
+// 자기 컴퓨터를 볼 때, 한 번도 연결된 적이 없고 접속할 자리도 없으면 Docker가 없는 컴퓨터로 본다.
+// 장애가 아니므로 수집 실패가 아니라 미지원으로 알린다. 설치해 둔 서버에서는 언제나 실패로 알린다.
+func (a *Agent) setDocker(at time.Time, err error) {
+	a.dockerOK = err == nil
+	if err == nil {
+		a.dockerSeen = true
+	}
+	if err != nil && a.cfg.Local && !a.dockerSeen && dockerapi.Missing(err) {
+		a.collectors["docker"] = protocol.CollectorStatus{
+			Name: "docker", State: protocol.CollectorUnsupported, Error: "Docker를 찾지 못했습니다. 설치되어 있지 않거나 꺼져 있습니다.",
+		}
+		return
+	}
+	a.setCollector("docker", at, err)
+}
+
 // collectTopology는 구성을 읽어 바뀌었거나 재전송 시점이면 다음 배치에 넣는다.
 func (a *Agent) collectTopology(ctx context.Context) {
 	now := a.now()
 	topology, err := a.docker.Topology(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.setCollector("docker", now, err)
-	a.dockerOK = err == nil
+	a.setDocker(now, err)
 	if err != nil {
-		return
+		// 읽지 못한 것을 컨테이너가 사라진 것으로 보지 않는다. 직전 구성을 유지한다.
+		if !a.cfg.Local || a.dockerSeen {
+			return
+		}
+		// 자기 컴퓨터를 볼 때 Docker에 한 번도 연결하지 못했으면 지울 컨테이너가 없다.
+		// 열린 포트는 보여줘야 하므로 컨테이너 없는 구성으로 보낸다.
+		topology = &protocol.Topology{ObservedAt: now}
 	}
 	topology.HostServices = a.readHostServices(ctx, topology, now)
 	topology.Normalize()
@@ -406,7 +435,15 @@ func (a *Agent) readHostServices(ctx context.Context, topology *protocol.Topolog
 		}
 		return nil
 	}
-	return deriveHostServices(listeners, running, topology.Containers, a.cfg.HostServices)
+	// 수집기 자신이 연 포트는 뺀다. 자기 컴퓨터를 볼 때는 중앙 서버가 같은 프로세스에서 포트를 연다.
+	own := os.Getpid()
+	others := listeners[:0:0]
+	for _, listener := range listeners {
+		if listener.PID != own {
+			others = append(others, listener)
+		}
+	}
+	return deriveHostServices(others, running, topology.Containers, a.cfg.HostServices, a.cfg.Local)
 }
 
 func hostServiceLabel(service protocol.HostService) string {
@@ -670,7 +707,11 @@ func (a *Agent) watchEvents(ctx context.Context) {
 			return
 		}
 		lostAt := a.now()
-		if err != nil {
+		a.mu.Lock()
+		// 자기 컴퓨터를 볼 때 한 번도 연결된 적이 없으면 끊긴 것이 아니다. 빠진 기록도 없다.
+		never := a.cfg.Local && !a.dockerSeen
+		a.mu.Unlock()
+		if err != nil && !(never && dockerapi.Missing(err)) {
 			log.Printf("Docker 이벤트 연결 끊김: %v", err)
 		}
 		select {
@@ -679,7 +720,7 @@ func (a *Agent) watchEvents(ctx context.Context) {
 		case <-time.After(backoff):
 		}
 		backoff = min(backoff*2, maxBackoff)
-		if a.now().Sub(lostAt) >= eventGapAfter {
+		if !never && a.now().Sub(lostAt) >= eventGapAfter {
 			a.mu.Lock()
 			a.pending.Gaps = append(a.pending.Gaps, protocol.Gap{
 				Source: "docker-events", From: lostAt, To: a.now(),
@@ -703,8 +744,7 @@ func (a *Agent) heartbeat(ctx context.Context) *protocol.Heartbeat {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.setCollector("boot", now, bootErr)
-	a.dockerOK = pingErr == nil
-	a.setCollector("docker", now, pingErr)
+	a.setDocker(now, pingErr)
 	collectors := make([]protocol.CollectorStatus, 0, len(a.collectors))
 	for _, status := range a.collectors {
 		collectors = append(collectors, status)
@@ -826,7 +866,9 @@ func (a *Agent) sendLoop(ctx context.Context) {
 
 // Run은 ctx가 끝날 때까지 수집과 전송을 계속한다.
 func (a *Agent) Run(ctx context.Context) error {
-	a.recordDowntime()
+	if !a.cfg.Local {
+		a.recordDowntime()
+	}
 	a.collectTopology(ctx)
 	a.collectTemperature(ctx)
 	a.collectDisk(ctx)

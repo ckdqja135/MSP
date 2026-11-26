@@ -137,7 +137,7 @@ function HostDetail({ server, now }: { server: Server; now: number }) {
         <Row label="마지막 수신">{server.last_seen ? `${formatAge(server.last_seen, now)}` : '기록 없음'}</Row>
         <Row label="가동 시간">{formatUptime(server.uptime_seconds)}</Row>
         <Row label="부팅 시각">{server.boot_time ? formatDateTime(server.boot_time) : '알 수 없음'}</Row>
-        <Row label="Docker">{server.docker_ok ? '응답' : '응답 없음'}</Row>
+        <Row label="Docker">{server.docker_ok ? '응답' : server.docker_absent ? '없음' : '응답 없음'}</Row>
         <Row label="시계 차이">{Math.abs(server.clock_skew_ms) > 2000 ? `${server.clock_skew_ms}ms (확인 필요)` : '2초 이내'}</Row>
       </section>
       <section className="detail-section">

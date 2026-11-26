@@ -1,10 +1,12 @@
 package hostports
 
 import (
+	"context"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -50,7 +52,7 @@ func TestScanReadsOnlyListeningSockets(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []Listener{
-		{IP: "0.0.0.0", Port: 80, Process: "nginx"},
+		{IP: "0.0.0.0", Port: 80, Process: "nginx", PID: 1234},
 		{IP: "::", Port: 443},
 		{IP: "127.0.0.1", Port: 631},
 		{IP: "::1", Port: 631},
@@ -149,4 +151,45 @@ func TestScanFindsOwnListenerOnRealProc(t *testing.T) {
 		}
 	}
 	t.Errorf("포트 %d를 찾지 못했다: %+v", port, listeners)
+}
+
+func TestSystemScanFindsOwnListener(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	port := listener.Addr().(*net.TCPAddr).Port
+	found, err := ScanSystem(context.Background())
+	if err != nil {
+		t.Skipf("이 환경에서는 연결 목록을 읽을 수 없다: %v", err)
+	}
+	for _, item := range found {
+		if item.Port != port {
+			continue
+		}
+		if item.IP != "127.0.0.1" || item.PID != os.Getpid() || item.Process == "" {
+			t.Errorf("자기 포트를 잘못 읽었다: %+v", item)
+		}
+		return
+	}
+	t.Errorf("자기가 연 포트 %d를 찾지 못했다", port)
+}
+
+func TestSystemNamesAreNormalized(t *testing.T) {
+	if got := listenAddress("*", syscall.AF_INET); got != "0.0.0.0" {
+		t.Errorf("모든 주소(IPv4) = %q", got)
+	}
+	if got := listenAddress("*", syscall.AF_INET6); got != "::" {
+		t.Errorf("모든 주소(IPv6) = %q", got)
+	}
+	if got := listenAddress("127.0.0.1", syscall.AF_INET); got != "127.0.0.1" {
+		t.Errorf("정해진 주소 = %q", got)
+	}
+	if got := programName("node.EXE"); got != "node" {
+		t.Errorf("확장자를 떼지 않았다: %q", got)
+	}
+	if got := programName("nginx"); got != "nginx" {
+		t.Errorf("이름이 바뀌었다: %q", got)
+	}
 }
